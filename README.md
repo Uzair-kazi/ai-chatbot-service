@@ -67,16 +67,31 @@ Edit `.env` and configure:
 Create the read-only PostgreSQL user:
 
 ```bash
-# Run as PostgreSQL superuser
-psql -U postgres -f scripts/create_readonly_user.sql
+# Run as PostgreSQL superuser (replace 'tank_depot' with your database name)
+psql -U postgres -d tank_depot -f scripts/create_readonly_user.sql
+```
 
-# Test the permissions
-psql -U chatbot_readonly -f scripts/test_readonly_user.sql
+**Important:** Edit `scripts/create_readonly_user.sql` and change the password from `CHANGE_THIS_PASSWORD` to a strong password before running the script.
+
+After creating the user, test the permissions:
+
+```bash
+# Test that the user can only read, not write (replace 'tank_depot' with your database name)
+psql -U chatbot_readonly -d tank_depot -f scripts/test_readonly_user.sql
 ```
 
 The `chatbot_readonly` user will have:
 - ✅ SELECT permission on all tables
 - ❌ No INSERT, UPDATE, DELETE, DROP, TRUNCATE, or ALTER permissions
+
+**Expected test results:**
+- Tests 1-2 (SELECT queries) should succeed
+- Tests 3-8 (write operations) should fail with permission errors
+
+Update your `.env` file with the connection string:
+```env
+DB_URL="postgresql://chatbot_readonly:your_password@localhost:5432/tank_depot"
+```
 
 ### 6. Verify Setup
 
