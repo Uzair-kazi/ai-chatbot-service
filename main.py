@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from api.routes import router as api_router
 from api.errors import validation_exception_handler, generic_exception_handler
 from middleware.rate_limiter import RateLimitMiddleware
+from middleware.request_logger import RequestLoggingMiddleware
 from config.logging_config import get_logger
 
 # Load environment variables
@@ -63,6 +64,9 @@ app.add_middleware(
 
 # Add rate limiting middleware
 app.add_middleware(RateLimitMiddleware)
+
+# Add request logging middleware
+app.add_middleware(RequestLoggingMiddleware)
 
 # Register exception handlers
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
