@@ -226,8 +226,8 @@ def test_authenticate_admin_with_non_admin_user():
     with pytest.raises(HTTPException) as exc_info:
         authenticate_admin(authorization_header)
     
-    assert exc_info.value.status_code == 401
-    assert "You must be an admin" in exc_info.value.detail
+    assert exc_info.value.status_code == 403
+    assert "Admin access required" in exc_info.value.detail
 
 
 def test_authenticate_admin_case_insensitive_role():

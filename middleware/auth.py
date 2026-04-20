@@ -22,17 +22,13 @@ from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from fastapi import HTTPException, status, Header
 from dotenv import load_dotenv
 
+from config.logging_config import get_logger
+
 # Load environment variables
 load_dotenv()
 
-# Get JWT secret from environment
+# Get JWT secret from environment (validation happens lazily in verify_jwt_token)
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-
-if not JWT_SECRET_KEY:
-    raise ValueError(
-        "JWT_SECRET_KEY environment variable is required. "
-        "This must match the secret used by the Node.js backend."
-    )
 
 
 def verify_jwt_token(token: str) -> Dict:
@@ -48,7 +44,20 @@ def verify_jwt_token(token: str) -> Dict:
     Raises:
         ExpiredSignatureError: If the token has expired
         InvalidTokenError: If the token signature is invalid
+        ValueError: If JWT_SECRET_KEY is not configured
     """
+    # Lazy validation of JWT_SECRET_KEY
+    if not JWT_SECRET_KEY:
+        logger = get_logger(__name__)
+        logger.error(
+            "JWT_SECRET_KEY environment variable is not configured. "
+            "This must match the secret used by the Node.js backend."
+        )
+        raise ValueError(
+            "JWT_SECRET_KEY environment variable is required. "
+            "This must match the secret used by the Node.js backend."
+        )
+    
     try:
         # Decode and verify the token
         # algorithms=["HS256"] matches the Node.js backend's default
