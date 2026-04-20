@@ -10,8 +10,9 @@ from typing import Dict
 import os
 import psycopg2
 
-from api.models import QuestionRequest, AnswerResponse, ErrorResponse, ErrorDetail, HealthResponse
+from api.models import QuestionRequest, AnswerResponse, ErrorResponse, ErrorDetail, HealthResponse, MetricsResponse
 from middleware.auth import get_current_admin_user
+from middleware.metrics_tracker import get_metrics_tracker
 from services.chatbot_pipeline import ask as pipeline_ask
 from config.logging_config import get_logger
 
@@ -233,3 +234,35 @@ async def health_check() -> HealthResponse:
                 "checks": checks
             }
         )
+
+
+
+@router.get(
+    "/metrics",
+    response_model=MetricsResponse,
+    summary="Metrics endpoint",
+    description="""
+    Get operational metrics for the service.
+    
+    This endpoint provides:
+    - Request statistics (total, success, errors)
+    - Rate limiting statistics (active users, blocked requests)
+    - Performance metrics (average, p95, p99 response times)
+    - Service uptime
+    
+    **Authentication:** Not required - public endpoint for monitoring.
+    
+    **Note:** Metrics are stored in-memory and reset on service restart.
+    """
+)
+async def get_metrics() -> MetricsResponse:
+    """
+    Get current operational metrics.
+    
+    Returns:
+        MetricsResponse with current metrics snapshot
+    """
+    metrics_tracker = get_metrics_tracker()
+    metrics_data = metrics_tracker.get_metrics()
+    
+    return MetricsResponse(**metrics_data)

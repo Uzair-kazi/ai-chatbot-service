@@ -258,3 +258,56 @@ class MetricsResponse(BaseModel):
             ]
         }
     }
+
+
+class RateLimitingStats(BaseModel):
+    """Rate limiting statistics."""
+    
+    active_users: int = Field(..., description="Number of active users")
+    blocked_requests: int = Field(..., description="Number of rate-limited requests")
+
+
+class PerformanceStats(BaseModel):
+    """Performance statistics."""
+    
+    avg_response_time_ms: float = Field(..., description="Average response time in milliseconds")
+    p95_response_time_ms: float = Field(..., description="95th percentile response time")
+    p99_response_time_ms: float = Field(..., description="99th percentile response time")
+
+
+class MetricsResponse(BaseModel):
+    """Response model for metrics endpoint."""
+    
+    requests: RequestStats = Field(..., description="Request statistics")
+    rate_limiting: RateLimitingStats = Field(..., description="Rate limiting statistics")
+    performance: PerformanceStats = Field(..., description="Performance statistics")
+    uptime_seconds: float = Field(..., description="Service uptime in seconds")
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        description="Metrics timestamp in ISO 8601 format"
+    )
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "requests": {
+                        "total": 1523,
+                        "success": 1489,
+                        "errors": 34
+                    },
+                    "rate_limiting": {
+                        "active_users": 12,
+                        "blocked_requests": 8
+                    },
+                    "performance": {
+                        "avg_response_time_ms": 245.67,
+                        "p95_response_time_ms": 512.34,
+                        "p99_response_time_ms": 1023.45
+                    },
+                    "uptime_seconds": 3600.5,
+                    "timestamp": "2026-04-20T10:30:00Z"
+                }
+            ]
+        }
+    }
