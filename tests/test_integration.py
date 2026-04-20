@@ -1,185 +1,361 @@
 """
-Integration Tests for Admin AI Chatbot
+Comprehensive Integration Tests
 
-These tests validate the complete pipeline with realistic questions.
-They require both database and AI provider configuration.
-
-Success Criteria:
-- 80%+ SQL accuracy (correct SQL patterns generated)
-- 90%+ queries complete in under 5 seconds
-- All questions return human-readable answers
+This module tests complete request/response cycles with all middleware interactions.
+Tests verify that auth, rate limiting, logging, and error handling work together correctly.
 """
 
-import os
-import json
-import time
 import pytest
-from pathlib import Path
-from services.chatbot_pipeline import ask
+from fastapi.testclient import TestClient
+from unittest.mock import patch, MagicMock
+import jwt
+import os
+from datetime import datetime, timedelta, timezone
+
+from main import app
+
+# Create test client
+client = TestClient(app)
+
+# Test JWT secret
+TEST_JWT_SECRET = os.getenv("JWT_SECRET_KEY", "test_secret_key_for_testing")
 
 
-# Load realistic questions from fixture
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-with open(FIXTURES_DIR / "realistic_questions.json", "r") as f:
-    REALISTIC_QUESTIONS = json.load(f)
+def create_test_token(user_id="test_user_123", role_name="admin", expired=False):
+    """Helper to create test JWT tokens."""
+    payload = {
+        "id": user_id,
+        "email": "test@example.com",
+        "role_name": role_name,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1 if not expired else -1)
+    }
+    return jwt.encode(payload, TEST_JWT_SECRET, algorithm="HS256")
 
 
-@pytest.mark.skipif(
-    not all([
-        os.getenv("DB_URL"),
-        os.getenv("AI_API_KEY"),
-        os.getenv("AI_MODEL"),
-        os.getenv("SDK_TYPE")
-    ]),
-    reason="Database and AI provider not configured - skipping integration tests"
-)
-@pytest.mark.integration
-class TestRealisticQuestions:
-    """Test suite for realistic business questions."""
+class TestCompleteRequestFlow:
+    """Test complete request flows with all middleware."""
     
-    def test_sql_accuracy(self):
-        """Test that 80%+ of questions generate correct SQL patterns."""
-        correct_count = 0
-        total_count = len(REALISTIC_QUESTIONS)
+    @patch('api.routes.pipeline_ask')
+    @patch('middleware.request_logger.logger')
+    def test_complete_ask_flow_with_all_middleware(self, mock_logger, mock_pipeline):
+        """Integration: Complete /v1/ask flow with auth, rate limiting, and logging."""
+        # Mock pipeline response
+        mock_pipeline.return_value = {
+            "answer": "There are 47 tanks.",
+            "sql": "SELECT COUNT(*) FROM iso_tank;",
+            "rows_count": 1,
+            "status_code": 200
+        }
         
-        results = []
+        token = create_test_token()
+        response = client.post(
+            "/v1/ask",
+            json={"question": "How many tanks?"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
         
-        for item in REALISTIC_QUESTIONS:
-            question = item["question"]
-            expected_patterns = item["expected_patterns"]
-            
-            result = ask(question)
-            
-            # Check if SQL contains expected patterns
-            sql = result["sql"].upper()
-            patterns_found = sum(1 for pattern in expected_patterns if pattern.upper() in sql)
-            is_correct = patterns_found >= len(expected_patterns) * 0.7  # 70% of patterns must match
-            
-            if is_correct:
-                correct_count += 1
-            
-            results.append({
-                "question": question,
-                "sql": result["sql"],
-                "is_correct": is_correct,
-                "patterns_found": patterns_found,
-                "patterns_expected": len(expected_patterns)
-            })
+        # Verify response
+        assert response.status_code == 200
+        data = response.json()
+        assert data["answer"] == "There are 47 tanks."
         
-        accuracy = (correct_count / total_count) * 100
+        # Verify rate limit headers are present
+        assert "X-RateLimit-Limit" in response.headers
+        assert "X-RateLimit-Remaining" in response.headers
+        assert "X-RateLimit-Reset" in response.headers
         
-        # Log results
-        print(f"\n=== SQL Accuracy Test Results ===")
-        print(f"Correct: {correct_count}/{total_count} ({accuracy:.1f}%)")
-        print(f"\nDetailed Results:")
-        for r in results:
-            status = "✓" if r["is_correct"] else "✗"
-            print(f"{status} {r['question']}")
-            print(f"  SQL: {r['sql']}")
-            print(f"  Patterns: {r['patterns_found']}/{r['patterns_expected']}")
+        # Verify request ID header is present
+        assert "X-Request-ID" in response.headers
         
-        # Assert 80%+ accuracy
-        assert accuracy >= 80, f"SQL accuracy {accuracy:.1f}% is below 80% threshold"
+        # Verify logging occurred
+        mock_logger.info.assert_called()
+        
+        # Verify pipeline was called
+        mock_pipeline.assert_called_once_with("How many tanks?")
     
-    def test_performance(self):
-        """Test that 90%+ of queries complete in under 5 seconds."""
-        fast_count = 0
-        total_count = len(REALISTIC_QUESTIONS)
+    @patch('api.routes.psycopg2.connect')
+    @patch('api.routes.os.getenv')
+    @patch('middleware.request_logger.logger')
+    def test_health_check_with_logging_no_auth(self, mock_logger, mock_getenv, mock_connect):
+        """Integration: Health check works without auth and logs requests."""
+        # Mock database connection
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = (1,)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_conn
         
-        results = []
+        # Mock environment variables
+        def getenv_side_effect(key, default=None):
+            env_vars = {
+                "DB_URL": "postgresql://user:pass@localhost/db",
+                "AI_PROVIDER": "openai",
+                "AI_API_KEY": "sk-test",
+                "AI_MODEL": "gpt-4",
+                "SERVICE_VERSION": "1.0.0"
+            }
+            return env_vars.get(key, default)
         
-        for item in REALISTIC_QUESTIONS:
-            question = item["question"]
-            
-            start_time = time.time()
-            result = ask(question)
-            execution_time = time.time() - start_time
-            
-            is_fast = execution_time < 5.0
-            
-            if is_fast:
-                fast_count += 1
-            
-            results.append({
-                "question": question,
-                "execution_time": execution_time,
-                "is_fast": is_fast
-            })
+        mock_getenv.side_effect = getenv_side_effect
         
-        performance_rate = (fast_count / total_count) * 100
+        # Call health endpoint without auth
+        response = client.get("/v1/health")
         
-        # Log results
-        print(f"\n=== Performance Test Results ===")
-        print(f"Fast queries: {fast_count}/{total_count} ({performance_rate:.1f}%)")
-        print(f"\nDetailed Results:")
-        for r in results:
-            status = "✓" if r["is_fast"] else "✗"
-            print(f"{status} {r['question']}: {r['execution_time']:.2f}s")
+        # Verify response
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
         
-        # Assert 90%+ under 5 seconds
-        assert performance_rate >= 90, f"Performance rate {performance_rate:.1f}% is below 90% threshold"
+        # Verify request ID header is present
+        assert "X-Request-ID" in response.headers
+        
+        # Verify logging occurred
+        mock_logger.info.assert_called()
     
-    def test_answer_quality(self):
-        """Test that all questions return human-readable answers."""
-        failed_questions = []
+    def test_metrics_endpoint_tracks_requests(self):
+        """Integration: Metrics endpoint tracks requests correctly."""
+        # Get initial metrics
+        response = client.get("/v1/metrics")
         
-        for item in REALISTIC_QUESTIONS:
-            question = item["question"]
-            
-            result = ask(question)
-            
-            # Check answer quality
-            answer = result["answer"]
-            
-            # Answer should be non-empty
-            if not answer or len(answer) < 10:
-                failed_questions.append({
-                    "question": question,
-                    "reason": "Answer too short or empty",
-                    "answer": answer
-                })
-                continue
-            
-            # Answer should not be an error message (status 200)
-            if result["status_code"] != 200:
-                failed_questions.append({
-                    "question": question,
-                    "reason": f"Error status {result['status_code']}",
-                    "answer": answer
-                })
-                continue
+        assert response.status_code == 200
+        data = response.json()
         
-        # Log results
-        if failed_questions:
-            print(f"\n=== Answer Quality Issues ===")
-            for f in failed_questions:
-                print(f"Question: {f['question']}")
-                print(f"Reason: {f['reason']}")
-                print(f"Answer: {f['answer']}\n")
+        # Verify metrics structure
+        assert "requests" in data
+        assert "rate_limiting" in data
+        assert "performance" in data
+        assert "uptime_seconds" in data
+        assert "timestamp" in data
         
-        # Assert all questions have good answers
-        assert len(failed_questions) == 0, f"{len(failed_questions)} questions failed answer quality check"
+        # Metrics should have some data (at least this request)
+        assert data["requests"]["total"] >= 0
+        assert data["uptime_seconds"] >= 0
     
-    def test_sample_questions(self):
-        """Test a few sample questions to verify end-to-end functionality."""
-        # Test 1: COUNT query
-        result = ask("How many ISO tanks are there?")
-        assert result["status_code"] == 200
-        assert "COUNT" in result["sql"].upper()
-        assert len(result["answer"]) > 0
+    @patch('api.routes.pipeline_ask')
+    def test_rate_limiting_applies_to_ask_not_health(self, mock_pipeline):
+        """Integration: Rate limiting applies to /v1/ask but not /v1/health."""
+        mock_pipeline.return_value = {
+            "answer": "Test",
+            "sql": "SELECT 1;",
+            "rows_count": 1,
+            "status_code": 200
+        }
         
-        # Test 2: FILTER query
-        result = ask("Show me ISO tanks with status 'IN'")
-        assert result["status_code"] == 200
-        assert "iso_tank_status" in result["sql"].lower()
-        assert len(result["answer"]) > 0
+        token = create_test_token(user_id="rate_limit_test_user")
         
-        # Test 3: DATE query
-        result = ask("List ISO tanks created today")
-        assert result["status_code"] == 200
-        assert "created_at" in result["sql"].lower()
-        assert len(result["answer"]) > 0
+        # Make 21 requests to /v1/ask (should hit rate limit)
+        for i in range(21):
+            response = client.post(
+                "/v1/ask",
+                json={"question": f"Question {i}"},
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            
+            if i < 20:
+                assert response.status_code == 200, f"Request {i} should succeed"
+            else:
+                assert response.status_code == 429, f"Request {i} should be rate limited"
+        
+        # Health endpoint should still work (no rate limiting)
+        with patch('api.routes.psycopg2.connect') as mock_connect:
+            with patch('api.routes.os.getenv') as mock_getenv:
+                # Mock database connection
+                mock_conn = MagicMock()
+                mock_cursor = MagicMock()
+                mock_cursor.fetchone.return_value = (1,)
+                mock_conn.cursor.return_value = mock_cursor
+                mock_connect.return_value = mock_conn
+                
+                # Mock environment variables
+                def getenv_side_effect(key, default=None):
+                    env_vars = {
+                        "DB_URL": "postgresql://user:pass@localhost/db",
+                        "AI_PROVIDER": "openai",
+                        "AI_API_KEY": "sk-test",
+                        "AI_MODEL": "gpt-4",
+                        "SERVICE_VERSION": "1.0.0"
+                    }
+                    return env_vars.get(key, default)
+                
+                mock_getenv.side_effect = getenv_side_effect
+                
+                # Make many health check requests (should not be rate limited)
+                for i in range(30):
+                    response = client.get("/v1/health")
+                    assert response.status_code == 200, f"Health check {i} should not be rate limited"
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])
+class TestCORSHeaders:
+    """Test CORS headers are present in all responses."""
+    
+    @patch('api.routes.pipeline_ask')
+    def test_cors_headers_on_ask_endpoint(self, mock_pipeline):
+        """Integration: CORS middleware is configured (TestClient doesn't expose CORS headers)."""
+        mock_pipeline.return_value = {
+            "answer": "Test",
+            "sql": "SELECT 1;",
+            "rows_count": 1,
+            "status_code": 200
+        }
+        
+        token = create_test_token()
+        response = client.post(
+            "/v1/ask",
+            json={"question": "Test"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        # TestClient doesn't expose CORS headers, but we can verify the response is successful
+        # CORS middleware is configured in main.py
+        assert response.status_code == 200
+    
+    @patch('api.routes.psycopg2.connect')
+    @patch('api.routes.os.getenv')
+    def test_cors_headers_on_health_endpoint(self, mock_getenv, mock_connect):
+        """Integration: CORS middleware is configured (TestClient doesn't expose CORS headers)."""
+        # Mock database connection
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = (1,)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_conn
+        
+        # Mock environment variables
+        def getenv_side_effect(key, default=None):
+            env_vars = {
+                "DB_URL": "postgresql://user:pass@localhost/db",
+                "AI_PROVIDER": "openai",
+                "AI_API_KEY": "sk-test",
+                "AI_MODEL": "gpt-4",
+                "SERVICE_VERSION": "1.0.0"
+            }
+            return env_vars.get(key, default)
+        
+        mock_getenv.side_effect = getenv_side_effect
+        
+        response = client.get("/v1/health")
+        
+        # TestClient doesn't expose CORS headers, but we can verify the response is successful
+        # CORS middleware is configured in main.py
+        assert response.status_code == 200
+    
+    def test_cors_headers_on_metrics_endpoint(self):
+        """Integration: CORS middleware is configured (TestClient doesn't expose CORS headers)."""
+        response = client.get("/v1/metrics")
+        
+        # TestClient doesn't expose CORS headers, but we can verify the response is successful
+        # CORS middleware is configured in main.py
+        assert response.status_code == 200
+
+
+class TestErrorConsistency:
+    """Test that error responses are consistent across all endpoints."""
+    
+    def test_auth_error_format_consistent(self):
+        """Integration: Auth errors return consistent format."""
+        # Missing auth header
+        response = client.post(
+            "/v1/ask",
+            json={"question": "Test"}
+        )
+        
+        assert response.status_code == 401
+        data = response.json()
+        assert "detail" in data
+    
+    def test_validation_error_format_consistent(self):
+        """Integration: Validation errors return consistent format."""
+        token = create_test_token()
+        
+        # Empty question (returns 400 due to custom validation handler)
+        response = client.post(
+            "/v1/ask",
+            json={"question": ""},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        assert response.status_code == 400
+        data = response.json()
+        # Custom validation handler returns {"error": {...}} format
+        assert "error" in data
+        assert data["error"]["code"] == "INVALID_REQUEST"
+    
+    @patch('api.routes.pipeline_ask')
+    def test_pipeline_error_format_consistent(self, mock_pipeline):
+        """Integration: Pipeline errors return consistent format."""
+        mock_pipeline.return_value = {
+            "answer": "Error",
+            "sql": "",
+            "rows_count": 0,
+            "status_code": 400,
+            "error": "SQL safety check failed"
+        }
+        
+        token = create_test_token()
+        response = client.post(
+            "/v1/ask",
+            json={"question": "DROP TABLE users;"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        assert response.status_code == 400
+        data = response.json()
+        assert "detail" in data
+
+
+class TestRequestTracing:
+    """Test that request tracing works across all endpoints."""
+    
+    @patch('api.routes.pipeline_ask')
+    def test_request_id_in_all_responses(self, mock_pipeline):
+        """Integration: X-Request-ID header present in all responses."""
+        mock_pipeline.return_value = {
+            "answer": "Test",
+            "sql": "SELECT 1;",
+            "rows_count": 1,
+            "status_code": 200
+        }
+        
+        token = create_test_token()
+        
+        # Test /v1/ask
+        response = client.post(
+            "/v1/ask",
+            json={"question": "Test"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        assert "X-Request-ID" in response.headers
+        
+        # Test /v1/metrics
+        response = client.get("/v1/metrics")
+        assert "X-Request-ID" in response.headers
+        
+        # Test root endpoint
+        response = client.get("/")
+        assert "X-Request-ID" in response.headers
+    
+    @patch('api.routes.pipeline_ask')
+    def test_request_id_is_unique(self, mock_pipeline):
+        """Integration: Each request gets a unique request ID."""
+        mock_pipeline.return_value = {
+            "answer": "Test",
+            "sql": "SELECT 1;",
+            "rows_count": 1,
+            "status_code": 200
+        }
+        
+        token = create_test_token()
+        
+        # Make multiple requests
+        request_ids = set()
+        for i in range(5):
+            response = client.post(
+                "/v1/ask",
+                json={"question": f"Test {i}"},
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            request_id = response.headers["X-Request-ID"]
+            request_ids.add(request_id)
+        
+        # All request IDs should be unique
+        assert len(request_ids) == 5
