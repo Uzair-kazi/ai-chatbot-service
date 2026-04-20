@@ -13,6 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from config.logging_config import get_logger
+from middleware.auth import extract_user_id
 
 logger = get_logger("api")
 
@@ -48,8 +49,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # Extract user ID from request state (set by auth middleware)
         user_id = "anonymous"
         if hasattr(request.state, "user"):
-            user = request.state.user
-            user_id = user.get("id") or user.get("user_id") or "unknown"
+            user_id = extract_user_id(request.state.user)
         
         # Start timer
         start_time = time.time()

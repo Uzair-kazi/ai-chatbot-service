@@ -112,6 +112,31 @@ def is_admin_user(payload: Dict) -> bool:
     return False
 
 
+def extract_user_id(payload: Dict) -> str:
+    """
+    Extract user ID from JWT token payload.
+    
+    Tries multiple common JWT fields in order:
+    1. 'id' - Custom field used by our Node.js backend
+    2. 'user_id' - Alternative custom field
+    3. 'sub' - Standard JWT subject claim
+    
+    Args:
+        payload: Decoded JWT token payload
+        
+    Returns:
+        User ID string, or "unknown" if no ID field is found
+    """
+    # Try common ID fields in order of preference
+    user_id = payload.get("id") or payload.get("user_id") or payload.get("sub")
+    
+    if user_id:
+        return str(user_id)
+    
+    # Fallback to "unknown" if no ID field found
+    return "unknown"
+
+
 def authenticate_admin(authorization_header: Optional[str]) -> Dict:
     """
     Authenticate and verify admin user from Authorization header.
@@ -203,6 +228,7 @@ def get_current_admin_user(authorization: Optional[str] = Header(None)) -> Dict:
 __all__ = [
     "verify_jwt_token",
     "is_admin_user",
+    "extract_user_id",
     "authenticate_admin",
     "get_current_admin_user"
 ]

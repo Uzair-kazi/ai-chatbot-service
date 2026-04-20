@@ -11,7 +11,7 @@ import os
 import psycopg2
 
 from api.models import QuestionRequest, AnswerResponse, ErrorResponse, ErrorDetail, HealthResponse, MetricsResponse
-from middleware.auth import get_current_admin_user
+from middleware.auth import get_current_admin_user, extract_user_id
 from middleware.metrics_tracker import get_metrics_tracker
 from services.chatbot_pipeline import ask as pipeline_ask
 from config.logging_config import get_logger
@@ -67,7 +67,7 @@ async def ask_question(
     Raises:
         HTTPException: For various error conditions (auth, validation, timeout, etc.)
     """
-    user_id = current_user.get("id") or current_user.get("user_id") or "unknown"
+    user_id = extract_user_id(current_user)
     logger.info(f"Question received from user {user_id}: {request.question[:100]}")
     
     try:

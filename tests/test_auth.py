@@ -257,3 +257,54 @@ def test_authenticate_admin_case_insensitive_role():
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v"])
+
+
+# Tests for extract_user_id helper
+
+def test_extract_user_id_from_id_field():
+    """Test that extract_user_id extracts from 'id' field."""
+    from middleware.auth import extract_user_id
+    
+    payload = {"id": "user123", "email": "test@example.com"}
+    assert extract_user_id(payload) == "user123"
+
+
+def test_extract_user_id_from_user_id_field():
+    """Test that extract_user_id falls back to 'user_id' field."""
+    from middleware.auth import extract_user_id
+    
+    payload = {"user_id": "user456", "email": "test@example.com"}
+    assert extract_user_id(payload) == "user456"
+
+
+def test_extract_user_id_from_sub_field():
+    """Test that extract_user_id falls back to 'sub' field (JWT standard)."""
+    from middleware.auth import extract_user_id
+    
+    payload = {"sub": "user789", "email": "test@example.com"}
+    assert extract_user_id(payload) == "user789"
+
+
+def test_extract_user_id_prefers_id_over_user_id():
+    """Test that extract_user_id prefers 'id' when multiple fields present."""
+    from middleware.auth import extract_user_id
+    
+    payload = {"id": "user123", "user_id": "user456", "sub": "user789"}
+    assert extract_user_id(payload) == "user123"
+
+
+def test_extract_user_id_returns_unknown_when_no_id():
+    """Test that extract_user_id returns 'unknown' when no ID fields present."""
+    from middleware.auth import extract_user_id
+    
+    payload = {"email": "test@example.com", "name": "Test User"}
+    assert extract_user_id(payload) == "unknown"
+
+
+def test_extract_user_id_converts_to_string():
+    """Test that extract_user_id converts numeric IDs to strings."""
+    from middleware.auth import extract_user_id
+    
+    payload = {"id": 12345}
+    assert extract_user_id(payload) == "12345"
+    assert isinstance(extract_user_id(payload), str)
