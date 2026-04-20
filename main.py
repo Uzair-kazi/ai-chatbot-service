@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from api.routes import router as api_router
+from middleware.rate_limiter import RateLimitMiddleware
 from config.logging_config import get_logger
 
 # Load environment variables
@@ -57,6 +58,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add rate limiting middleware
+app.add_middleware(RateLimitMiddleware)
 
 # Include API router with /v1 prefix
 app.include_router(api_router, prefix="/v1")
