@@ -15,9 +15,11 @@ Environment Variables:
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 from dotenv import load_dotenv
 
 from api.routes import router as api_router
+from api.errors import validation_exception_handler, generic_exception_handler
 from middleware.rate_limiter import RateLimitMiddleware
 from config.logging_config import get_logger
 
@@ -61,6 +63,10 @@ app.add_middleware(
 
 # Add rate limiting middleware
 app.add_middleware(RateLimitMiddleware)
+
+# Register exception handlers
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(Exception, generic_exception_handler)
 
 # Include API router with /v1 prefix
 app.include_router(api_router, prefix="/v1")
