@@ -19,7 +19,7 @@ import os
 from typing import Dict, Optional
 import jwt
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
-from fastapi import HTTPException, status
+from fastapi import HTTPException, status, Header
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -157,16 +157,17 @@ def authenticate_admin(authorization_header: Optional[str]) -> Dict:
     # Check if user is admin
     if not is_admin_user(payload):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="You must be an admin to use this feature"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
         )
     
     return payload
 
 
 # FastAPI dependency for protecting endpoints
-# This will be used in Phase 3 when we create API endpoints
-def get_current_admin_user(authorization: Optional[str] = None) -> Dict:
+from fastapi import Header
+
+def get_current_admin_user(authorization: Optional[str] = Header(None)) -> Dict:
     """
     FastAPI dependency to get the current authenticated admin user.
     
