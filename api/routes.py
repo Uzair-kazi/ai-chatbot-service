@@ -47,7 +47,8 @@ router = APIRouter()
     **Authentication:** Requires valid JWT token with admin role.
     
     **Rate Limiting:** 20 requests per minute per user.
-    """
+    """,
+    tags=["Questions"]
 )
 async def ask_question(
     request: QuestionRequest,
@@ -153,7 +154,8 @@ async def ask_question(
     **Authentication:** Not required - public endpoint for monitoring.
     
     Returns 200 if all checks pass, 503 if any check fails.
-    """
+    """,
+    tags=["Monitoring"]
 )
 async def health_check() -> HealthResponse:
     """
@@ -253,7 +255,8 @@ async def health_check() -> HealthResponse:
     **Authentication:** Not required - public endpoint for monitoring.
     
     **Note:** Metrics are stored in-memory and reset on service restart.
-    """
+    """,
+    tags=["Monitoring"]
 )
 async def get_metrics() -> MetricsResponse:
     """

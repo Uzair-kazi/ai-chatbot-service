@@ -46,11 +46,68 @@ logger = get_logger(__name__)
 # Create FastAPI application
 app = FastAPI(
     title="Admin AI Chatbot API",
-    description="Production-ready REST API for natural language database queries",
+    description="""
+    Production-ready REST API for natural language database queries.
+    
+    ## Features
+    
+    * **Natural Language Queries**: Ask questions in plain English, get formatted answers
+    * **SQL Generation**: AI-powered SQL query generation from natural language
+    * **Safety Validation**: Automatic SQL safety checks to prevent destructive operations
+    * **JWT Authentication**: Secure admin-only access with JWT tokens
+    * **Rate Limiting**: 20 requests per minute per user
+    * **Request Logging**: Comprehensive audit logging with request IDs
+    * **Health Monitoring**: Health check and metrics endpoints for operational visibility
+    
+    ## Authentication
+    
+    All `/v1/ask` endpoints require a valid JWT token with admin role.
+    
+    Include the token in the Authorization header:
+    ```
+    Authorization: Bearer <your-jwt-token>
+    ```
+    
+    ## Rate Limiting
+    
+    The API enforces rate limiting of 20 requests per minute per user.
+    Rate limit headers are included in responses:
+    - `X-RateLimit-Limit`: Maximum requests per window
+    - `X-RateLimit-Remaining`: Remaining requests in current window
+    - `X-RateLimit-Reset`: Unix timestamp when the window resets
+    
+    ## Error Handling
+    
+    All errors return a consistent JSON structure:
+    ```json
+    {
+        "error": {
+            "code": "ERROR_CODE",
+            "message": "Human-readable error message",
+            "status": 400,
+            "timestamp": "2026-04-20T10:30:00Z"
+        }
+    }
+    ```
+    
+    ## Request Tracing
+    
+    All responses include an `X-Request-ID` header for request tracing and debugging.
+    """,
     version=SERVICE_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_url="/openapi.json"
+    openapi_url="/openapi.json",
+    openapi_tags=[
+        {
+            "name": "Questions",
+            "description": "Natural language question endpoints (requires authentication)"
+        },
+        {
+            "name": "Monitoring",
+            "description": "Health check and metrics endpoints (public)"
+        }
+    ]
 )
 
 # Configure CORS middleware
