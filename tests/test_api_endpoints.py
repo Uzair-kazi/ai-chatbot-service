@@ -257,6 +257,28 @@ class TestAskEndpoint:
         
         # Verify pipeline was called with the question
         mock_pipeline.assert_called_once_with("Integration test question")
+    
+    @patch('api.routes.pipeline_ask')
+    def test_question_whitespace_is_trimmed(self, mock_pipeline):
+        """Validation: Question with leading/trailing whitespace is trimmed."""
+        mock_pipeline.return_value = {
+            "answer": "Test answer",
+            "sql": "SELECT 1;",
+            "rows_count": 1,
+            "status_code": 200
+        }
+        
+        token = create_test_token()
+        response = client.post(
+            "/v1/ask",
+            json={"question": "  How many tanks?  "},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        assert response.status_code == 200
+        
+        # Verify pipeline received the trimmed question
+        mock_pipeline.assert_called_once_with("How many tanks?")
 
 
 class TestRootEndpoint:
@@ -272,3 +294,4 @@ class TestRootEndpoint:
         assert "version" in data
         assert "docs" in data
         assert "health" in data
+
