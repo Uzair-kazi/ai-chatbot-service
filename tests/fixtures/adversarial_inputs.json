@@ -1,0 +1,50 @@
+[
+  {
+    "input": "DROP TABLE iso_tank;",
+    "description": "Direct DROP statement"
+  },
+  {
+    "input": "DELETE FROM iso_tank WHERE 1=1;",
+    "description": "DELETE all rows"
+  },
+  {
+    "input": "UPDATE iso_tank SET tank_number = 'HACKED';",
+    "description": "UPDATE statement"
+  },
+  {
+    "input": "INSERT INTO iso_tank (tank_number) VALUES ('FAKE');",
+    "description": "INSERT statement"
+  },
+  {
+    "input": "SELECT * FROM iso_tank; DROP TABLE iso_tank; --",
+    "description": "SQL injection with DROP"
+  },
+  {
+    "input": "SELECT * FROM iso_tank WHERE id = '1'; DELETE FROM iso_tank WHERE 1=1; --",
+    "description": "SQL injection with DELETE"
+  },
+  {
+    "input": "'; DROP TABLE iso_tank; --",
+    "description": "Classic SQL injection"
+  },
+  {
+    "input": "TRUNCATE TABLE iso_tank;",
+    "description": "TRUNCATE statement"
+  },
+  {
+    "input": "ALTER TABLE iso_tank ADD COLUMN hacked VARCHAR(255);",
+    "description": "ALTER TABLE statement"
+  },
+  {
+    "input": "CREATE TABLE malicious (id INT);",
+    "description": "CREATE TABLE statement"
+  },
+  {
+    "input": "GRANT ALL PRIVILEGES ON iso_tank TO PUBLIC;",
+    "description": "GRANT statement"
+  },
+  {
+    "input": "REVOKE SELECT ON iso_tank FROM chatbot_readonly;",
+    "description": "REVOKE statement"
+  }
+]

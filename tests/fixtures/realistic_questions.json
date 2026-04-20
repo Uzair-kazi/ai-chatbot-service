@@ -1,0 +1,82 @@
+[
+  {
+    "question": "How many ISO tanks are currently in 'IN' status?",
+    "expected_patterns": ["COUNT", "iso_tank", "iso_tank_status", "IN"]
+  },
+  {
+    "question": "Which ISO tanks haven't been surveyed yet?",
+    "expected_patterns": ["iso_tank", "survey_form_id", "IS NULL"]
+  },
+  {
+    "question": "Show me all ISO tanks created this month",
+    "expected_patterns": ["iso_tank", "created_at", "DATE_TRUNC", "month"]
+  },
+  {
+    "question": "List all service tanks with their status",
+    "expected_patterns": ["service_tank", "service_tank_status"]
+  },
+  {
+    "question": "How many service tanks are there in total?",
+    "expected_patterns": ["COUNT", "service_tank"]
+  },
+  {
+    "question": "Show me ISO tanks that have both vehicle in and vehicle out",
+    "expected_patterns": ["iso_tank", "vehicle_in_id", "vehicle_out_id", "IS NOT NULL"]
+  },
+  {
+    "question": "What are the different ISO tank statuses?",
+    "expected_patterns": ["DISTINCT", "iso_tank_status", "iso_tank"]
+  },
+  {
+    "question": "List ISO tanks created in the last 7 days",
+    "expected_patterns": ["iso_tank", "created_at", "INTERVAL", "7"]
+  },
+  {
+    "question": "How many ISO tanks were created today?",
+    "expected_patterns": ["COUNT", "iso_tank", "created_at", "CURRENT_DATE"]
+  },
+  {
+    "question": "Show me the 10 most recently created ISO tanks",
+    "expected_patterns": ["iso_tank", "created_at", "ORDER BY", "DESC", "LIMIT", "10"]
+  },
+  {
+    "question": "Which ISO tanks have been edited?",
+    "expected_patterns": ["iso_tank", "is_edited", "true"]
+  },
+  {
+    "question": "List all ISO tanks that came from service",
+    "expected_patterns": ["iso_tank", "is_tank_from_service", "true"]
+  },
+  {
+    "question": "How many service tanks have status 'IN'?",
+    "expected_patterns": ["COUNT", "service_tank", "service_tank_status", "IN"]
+  },
+  {
+    "question": "Show me ISO tanks with their tank numbers",
+    "expected_patterns": ["tank_number", "iso_tank"]
+  },
+  {
+    "question": "What is the total count of all ISO tanks?",
+    "expected_patterns": ["COUNT", "iso_tank"]
+  },
+  {
+    "question": "List ISO tanks that have a survey form",
+    "expected_patterns": ["iso_tank", "survey_form_id", "IS NOT NULL"]
+  },
+  {
+    "question": "Show me service tanks created in the last month",
+    "expected_patterns": ["service_tank", "created_at", "INTERVAL", "month"]
+  },
+  {
+    "question": "How many ISO tanks don't have a vehicle in?",
+    "expected_patterns": ["COUNT", "iso_tank", "vehicle_in_id", "IS NULL"]
+  },
+  {
+    "question": "List the first 5 ISO tanks",
+    "expected_patterns": ["iso_tank", "LIMIT", "5"]
+  },
+  {
+    "question": "Show me all ISO tanks ordered by creation date",
+    "expected_patterns": ["iso_tank", "ORDER BY", "created_at"]
+  }
+]
