@@ -148,7 +148,11 @@ class HealthCheck(BaseModel):
     
     status: str = Field(
         ...,
-        description="Status of the check: 'ok' or error message"
+        description="Status of the check: 'healthy' or 'unhealthy'"
+    )
+    message: str = Field(
+        ...,
+        description="Status message or error details"
     )
 
 
@@ -163,7 +167,7 @@ class HealthResponse(BaseModel):
         ...,
         description="Service version"
     )
-    checks: Dict[str, str] = Field(
+    checks: Dict[str, HealthCheck] = Field(
         ...,
         description="Individual health checks for dependencies"
     )
@@ -179,8 +183,8 @@ class HealthResponse(BaseModel):
                     "status": "healthy",
                     "version": "1.0.0",
                     "checks": {
-                        "database": "ok",
-                        "ai_provider": "ok"
+                        "database": {"status": "healthy", "message": "Connected"},
+                        "ai_provider": {"status": "healthy", "message": "Configured: openai/gpt-4"}
                     },
                     "timestamp": "2026-04-20T10:30:00Z"
                 },
@@ -188,15 +192,14 @@ class HealthResponse(BaseModel):
                     "status": "unhealthy",
                     "version": "1.0.0",
                     "checks": {
-                        "database": "error: connection refused",
-                        "ai_provider": "ok"
+                        "database": {"status": "unhealthy", "message": "Connection failed: connection refused"},
+                        "ai_provider": {"status": "healthy", "message": "Configured: openai/gpt-4"}
                     },
                     "timestamp": "2026-04-20T10:30:00Z"
                 }
             ]
         }
     }
-
 
 class RequestStats(BaseModel):
     """Request statistics."""

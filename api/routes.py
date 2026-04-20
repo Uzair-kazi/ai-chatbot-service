@@ -7,8 +7,10 @@ Routes are organized under the /v1 prefix for versioning.
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Dict
+import os
+import psycopg2
 
-from api.models import QuestionRequest, AnswerResponse, ErrorResponse, ErrorDetail
+from api.models import QuestionRequest, AnswerResponse, ErrorResponse, ErrorDetail, HealthResponse
 from middleware.auth import get_current_admin_user
 from services.chatbot_pipeline import ask as pipeline_ask
 from config.logging_config import get_logger
@@ -131,3 +133,103 @@ async def ask_question(
 
 # Health check and metrics endpoints will be added in subsequent units
 
+
+
+@router.get(
+    "/health",
+    response_model=HealthResponse,
+    responses={
+        503: {"model": ErrorResponse, "description": "Service unhealthy"},
+    },
+    summary="Health check endpoint",
+    description="""
+    Check the health status of the service and its dependencies.
+    
+    This endpoint verifies:
+    - Database connectivity (simple SELECT 1 query)
+    - AI provider configuration (environment variables present)
+    
+    **Authentication:** Not required - public endpoint for monitoring.
+    
+    Returns 200 if all checks pass, 503 if any check fails.
+    """
+)
+async def health_check() -> HealthResponse:
+    """
+    Perform health checks on service dependencies.
+    
+    Returns:
+        HealthResponse with overall status and individual check results
+    
+    Raises:
+        HTTPException: 503 if any health check fails
+    """
+    checks = {}
+    overall_healthy = True
+    
+    # Check 1: Database connectivity
+    try:
+        db_url = os.getenv("DB_URL")
+        if not db_url:
+            checks["database"] = {"status": "unhealthy", "message": "DB_URL not configured"}
+            overall_healthy = False
+        else:
+            # Simple connection test
+            conn = psycopg2.connect(db_url)
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            cursor.close()
+            conn.close()
+            checks["database"] = {"status": "healthy", "message": "Connected"}
+    except Exception as e:
+        checks["database"] = {"status": "unhealthy", "message": f"Connection failed: {str(e)[:100]}"}
+        overall_healthy = False
+    
+    # Check 2: AI provider configuration
+    try:
+        ai_provider = os.getenv("AI_PROVIDER")
+        ai_api_key = os.getenv("AI_API_KEY")
+        ai_model = os.getenv("AI_MODEL")
+        
+        if not ai_provider or not ai_api_key or not ai_model:
+            missing = []
+            if not ai_provider:
+                missing.append("AI_PROVIDER")
+            if not ai_api_key:
+                missing.append("AI_API_KEY")
+            if not ai_model:
+                missing.append("AI_MODEL")
+            checks["ai_provider"] = {
+                "status": "unhealthy",
+                "message": f"Missing configuration: {', '.join(missing)}"
+            }
+            overall_healthy = False
+        else:
+            checks["ai_provider"] = {
+                "status": "healthy",
+                "message": f"Configured: {ai_provider}/{ai_model}"
+            }
+    except Exception as e:
+        checks["ai_provider"] = {"status": "unhealthy", "message": f"Configuration error: {str(e)[:100]}"}
+        overall_healthy = False
+    
+    # Get service version
+    version = os.getenv("SERVICE_VERSION", "1.0.0")
+    
+    # Return response
+    if overall_healthy:
+        return HealthResponse(
+            status="healthy",
+            version=version,
+            checks=checks
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "status": "unhealthy",
+                "version": version,
+                "checks": checks
+            }
+        )
