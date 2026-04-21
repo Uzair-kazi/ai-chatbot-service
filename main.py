@@ -59,6 +59,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     logger.info(f"CORS Origins: {cors_origins}")
     logger.info(f"Server: {HOST}:{PORT}")
     
+    # Warn about CORS wildcard in production
+    if ENVIRONMENT == "production" and CORS_ORIGINS == "*":
+        logger.warning(
+            "CORS_ORIGINS is set to '*' (wildcard) in production environment. "
+            "This allows requests from any origin and may pose a security risk. "
+            "Consider setting specific allowed origins in the CORS_ORIGINS environment variable."
+        )
+    
     yield
     
     # Shutdown
