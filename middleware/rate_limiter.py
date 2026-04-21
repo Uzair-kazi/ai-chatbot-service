@@ -218,6 +218,9 @@ class RateLimiter:
 # Global rate limiter instance
 rate_limiter = RateLimiter()
 
+# Login-specific rate limiter (stricter: 5 requests per minute)
+login_rate_limiter = RateLimiter(max_requests=5, window_seconds=60)
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
@@ -285,6 +288,68 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         # Add rate limit headers to response
         headers = rate_limiter.get_rate_limit_headers(user_id)
+        for key, value in headers.items():
+            response.headers[key] = value
+        
+        return response
+
+
+
+class LoginRateLimitMiddleware(BaseHTTPMiddleware):
+    """
+    FastAPI middleware for login endpoint rate limiting.
+    
+    Applies stricter rate limiting (5 req/min) to login endpoint only.
+    Uses IP address as rate limit key since user isn't authenticated yet.
+    """
+    
+    async def dispatch(self, request: Request, call_next):
+        """
+        Process request and apply login rate limiting.
+        
+        Args:
+            request: FastAPI request
+            call_next: Next middleware/endpoint
+        
+        Returns:
+            Response with rate limit headers
+        """
+        # Only apply to login endpoint
+        if request.url.path != "/v1/login":
+            return await call_next(request)
+        
+        # Use IP address as rate limit key (user isn't authenticated yet)
+        user_id = f"login_ip_{request.client.host if request.client else 'unknown'}"
+        
+        # Check rate limit
+        is_allowed, retry_after = login_rate_limiter.check_rate_limit(user_id)
+        
+        if not is_allowed:
+            # Rate limit exceeded - return 429
+            headers = login_rate_limiter.get_rate_limit_headers(user_id)
+            headers["Retry-After"] = str(retry_after)
+            
+            logger.warning(f"Login rate limit exceeded for IP: {request.client.host if request.client else 'unknown'}")
+            
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={
+                    "error": {
+                        "code": "RATE_LIMIT_EXCEEDED",
+                        "message": f"Too many login attempts. Please wait {retry_after} seconds before trying again.",
+                        "status": 429,
+                        "retry_after": retry_after,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    }
+                },
+                headers=headers
+            )
+        
+        # Process request
+        response = await call_next(request)
+        
+        # Add rate limit headers to response
+        headers = login_rate_limiter.get_rate_limit_headers(user_id)
         for key, value in headers.items():
             response.headers[key] = value
         

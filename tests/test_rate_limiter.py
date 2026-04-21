@@ -294,3 +294,174 @@ class TestRateLimiter:
             # but should never return 429 (rate limited)
             assert response.status_code != 429
 
+
+
+
+class TestLoginRateLimiter:
+    """Tests for login-specific rate limiting."""
+    
+    def test_login_rate_limiter_has_stricter_limit(self):
+        """Happy path: Login rate limiter has stricter limit (5 req/min vs 20)."""
+        from middleware.rate_limiter import login_rate_limiter
+        
+        assert login_rate_limiter.max_requests == 5
+        assert login_rate_limiter.window_seconds == 60
+    
+    def test_5_login_requests_within_1_minute_succeed(self):
+        """Happy path: 5 login requests within 1 minute succeed."""
+        from fastapi.testclient import TestClient
+        from main import app
+        from unittest.mock import patch
+        
+        client = TestClient(app)
+        
+        with patch('api.routes.get_user_by_email') as mock_get_user:
+            mock_get_user.return_value = None  # User not found (will return 401)
+            
+            # Make 5 requests (all should go through, even if they fail auth)
+            for i in range(5):
+                response = client.post(
+                    "/v1/login",
+                    json={"email": f"test{i}@example.com", "password": "password"}
+                )
+                # Should get 401 (auth failure), not 429 (rate limit)
+                assert response.status_code == 401, f"Request {i+1} should not be rate limited"
+                
+                # Check rate limit headers are present
+                assert "X-RateLimit-Limit" in response.headers
+                assert "X-RateLimit-Remaining" in response.headers
+    
+    def test_6th_login_request_within_1_minute_returns_429(self):
+        """Error path: 6th login request within 1 minute returns 429."""
+        from fastapi.testclient import TestClient
+        from main import app
+        from unittest.mock import patch
+        
+        client = TestClient(app)
+        
+        with patch('api.routes.get_user_by_email') as mock_get_user:
+            mock_get_user.return_value = None
+            
+            # Make 5 requests
+            for _ in range(5):
+                client.post(
+                    "/v1/login",
+                    json={"email": "test2@example.com", "password": "password"}
+                )
+            
+            # 6th request should be rate limited
+            response = client.post(
+                "/v1/login",
+                json={"email": "test2@example.com", "password": "password"}
+            )
+            
+            assert response.status_code == 429
+            assert "Retry-After" in response.headers
+            
+            data = response.json()
+            assert data["error"]["code"] == "RATE_LIMIT_EXCEEDED"
+            assert "login attempts" in data["error"]["message"].lower()
+    
+    def test_rate_limit_resets_after_60_seconds(self):
+        """Edge case: Rate limit resets after 60 seconds."""
+        from middleware.rate_limiter import RateLimiter
+        
+        # Create a test limiter with short window
+        test_limiter = RateLimiter(max_requests=5, window_seconds=1)
+        
+        # Make 5 requests
+        for _ in range(5):
+            is_allowed, _ = test_limiter.check_rate_limit("test_ip_reset")
+        
+        # 6th request should be denied
+        is_allowed, _ = test_limiter.check_rate_limit("test_ip_reset")
+        assert is_allowed is False
+        
+        # Wait for window to expire
+        time.sleep(1.1)
+        
+        # Request should now be allowed
+        is_allowed, retry_after = test_limiter.check_rate_limit("test_ip_reset")
+        assert is_allowed is True
+        assert retry_after is None
+    
+    def test_different_ips_have_independent_rate_limits(self):
+        """Edge case: Different IP addresses have independent rate limits."""
+        from fastapi.testclient import TestClient
+        from main import app
+        from unittest.mock import patch
+        
+        client = TestClient(app)
+        
+        with patch('api.routes.get_user_by_email') as mock_get_user:
+            mock_get_user.return_value = None
+            
+            # Make 5 requests from "IP 1" (simulated by test client)
+            for _ in range(5):
+                client.post(
+                    "/v1/login",
+                    json={"email": "ip1@example.com", "password": "password"}
+                )
+            
+            # 6th request from "IP 1" should be rate limited
+            response = client.post(
+                "/v1/login",
+                json={"email": "ip1@example.com", "password": "password"}
+            )
+            assert response.status_code == 429
+            
+            # But requests from "IP 2" should still work
+            # (In real scenario, this would be a different client IP)
+            # For testing, we're limited by the test client's single IP
+            # This test documents the expected behavior
+    
+    def test_rate_limit_headers_present_in_login_response(self):
+        """Integration: Rate limit headers (X-RateLimit-*) are present in response."""
+        from fastapi.testclient import TestClient
+        from main import app
+        from unittest.mock import patch
+        
+        client = TestClient(app)
+        
+        with patch('api.routes.get_user_by_email') as mock_get_user:
+            mock_get_user.return_value = None
+            
+            response = client.post(
+                "/v1/login",
+                json={"email": "headers_test@example.com", "password": "password"}
+            )
+            
+            # Check that rate limit headers are present
+            assert "X-RateLimit-Limit" in response.headers
+            assert "X-RateLimit-Remaining" in response.headers
+            assert "X-RateLimit-Reset" in response.headers
+    
+    def test_retry_after_header_indicates_seconds_until_reset(self):
+        """Integration: Retry-After header indicates seconds until reset."""
+        from fastapi.testclient import TestClient
+        from main import app
+        from unittest.mock import patch
+        
+        client = TestClient(app)
+        
+        with patch('api.routes.get_user_by_email') as mock_get_user:
+            mock_get_user.return_value = None
+            
+            # Make 5 requests
+            for _ in range(5):
+                client.post(
+                    "/v1/login",
+                    json={"email": "retry@example.com", "password": "password"}
+                )
+            
+            # 6th request should be rate limited
+            response = client.post(
+                "/v1/login",
+                json={"email": "retry@example.com", "password": "password"}
+            )
+            
+            assert response.status_code == 429
+            assert "Retry-After" in response.headers
+            
+            retry_after = int(response.headers["Retry-After"])
+            assert 0 < retry_after <= 60

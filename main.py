@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 
 from api.routes import router as api_router
 from api.errors import validation_exception_handler, generic_exception_handler
-from middleware.rate_limiter import RateLimitMiddleware, rate_limiter
+from middleware.rate_limiter import RateLimitMiddleware, LoginRateLimitMiddleware, rate_limiter, login_rate_limiter
 from middleware.request_logger import RequestLoggingMiddleware
 from config.logging_config import get_logger
 
@@ -72,6 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Shutdown
     logger.info("Shutting down Admin AI Chatbot API")
     rate_limiter.shutdown()  # Gracefully shutdown rate limiter
+    login_rate_limiter.shutdown()  # Gracefully shutdown login rate limiter
 
 # Create FastAPI application with lifespan
 app = FastAPI(
@@ -150,7 +151,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Add rate limiting middleware
+# Add rate limiting middleware (login-specific must come before general)
+app.add_middleware(LoginRateLimitMiddleware)
 app.add_middleware(RateLimitMiddleware)
 
 # Add request logging middleware
