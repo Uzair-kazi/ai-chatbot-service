@@ -158,7 +158,99 @@ ai-service-croyance/
 
 ## Usage
 
-### Basic Usage
+### REST API (Phase 3)
+
+The service provides a production-ready REST API with FastAPI.
+
+#### Starting the Server
+
+```bash
+# Development mode (with auto-reload)
+python main.py
+
+# Production mode
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+The API will be available at:
+- **API Base**: http://localhost:8000
+- **Interactive Docs**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+
+#### Authentication
+
+**Login to get a JWT token:**
+
+```bash
+curl -X POST http://localhost:8000/v1/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin@example.com", "password": "your_password"}'
+```
+
+Response:
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": "123",
+    "email": "admin@example.com",
+    "name": "Admin User",
+    "role": "Admin"
+  },
+  "timestamp": "2026-04-21T10:30:00Z"
+}
+```
+
+**Use the token to ask questions:**
+
+```bash
+curl -X POST http://localhost:8000/v1/ask \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How many ISO tanks are in the database?"}'
+```
+
+Response:
+```json
+{
+  "answer": "There are 4,701 ISO tanks in the database.",
+  "sql": "SELECT COUNT(*) FROM iso_tank LIMIT 100;",
+  "rows_count": 1,
+  "execution_time_ms": 234,
+  "timestamp": "2026-04-21T10:30:00Z"
+}
+```
+
+#### Rate Limiting
+
+- **General API**: 20 requests per minute per user
+- **Login endpoint**: 5 requests per minute per IP address (stricter to prevent brute force)
+
+Rate limit headers are included in all responses:
+- `X-RateLimit-Limit`: Maximum requests per window
+- `X-RateLimit-Remaining`: Remaining requests in current window
+- `X-RateLimit-Reset`: Unix timestamp when the window resets
+
+#### Testing the API
+
+Use the included test script:
+
+```bash
+# Test with default question
+python test_api.py
+
+# Test with custom question
+python test_api.py "Show me the top 5 ISO tanks by capacity"
+```
+
+The test script will:
+1. Check if the server is running
+2. Generate a JWT token (or use login endpoint)
+3. Test the health endpoint
+4. Ask a question
+5. Display the response with rate limit information
+
+### Basic Usage (Python)
 
 ```python
 from services.chatbot_pipeline import ask
