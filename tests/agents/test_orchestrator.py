@@ -25,7 +25,8 @@ class TestOrchestratorAgent:
     @pytest.fixture
     def orchestrator(self):
         """Create orchestrator instance for testing."""
-        with patch('agents.orchestrator.SQLGenerationAgent'):
+        with patch('agents.orchestrator.SQLGenerationAgent'), \
+             patch('agents.orchestrator.SchemaIntelligenceAgent'):
             return OrchestratorAgent()
     
     @pytest.fixture
@@ -40,8 +41,20 @@ class TestOrchestratorAgent:
     
     def test_route_simple_query_success(self, orchestrator, valid_request):
         """
-        Happy path: Route simple query to SQL Generation agent → return successful response.
+        Happy path: Route simple query through Schema Intelligence → SQL Generation → return successful response.
         """
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent response
         mock_sql_response = SQLGenerationResponse(
             success=True,
@@ -52,6 +65,8 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 1.23}
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
@@ -66,13 +81,16 @@ class TestOrchestratorAgent:
         assert response.data["retry_count"] == 0
         assert response.error is None
         assert response.metadata["agent"] == "SQLGenerationAgent"
-        assert response.metadata["routing_strategy"] == "simple"
+        assert response.metadata["routing_strategy"] == "schema_intelligence"
+        assert response.metadata["schema_intelligence_success"] is True
+        
+        # Verify Schema Intelligence was called
+        orchestrator.schema_intelligence_agent.execute.assert_called_once()
         
         # Verify SQL agent was called correctly
         orchestrator.sql_agent.execute.assert_called_once()
         call_args = orchestrator.sql_agent.execute.call_args[0][0]
         assert call_args.question == valid_request.question
-        assert call_args.db_schema == valid_request.db_schema
         assert call_args.max_retries == 2
         assert call_args.temperature == 0.1
     
@@ -307,7 +325,7 @@ class TestOrchestratorAgent:
     
     def test_schema_passed_correctly(self, orchestrator):
         """
-        Integration: Orchestrator correctly passes schema to SQL Generation agent.
+        Integration: Orchestrator passes pruned schema from Schema Intelligence to SQL Generation agent.
         """
         # Create request with specific schema
         schema = (
@@ -325,6 +343,24 @@ class TestOrchestratorAgent:
             db_schema=schema
         )
         
+        # Mock Schema Intelligence response (prunes to just iso_tank)
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        pruned_schema = (
+            "Table: iso_tank\n"
+            "  - id: uuid\n"
+            "  - tank_number: varchar\n"
+            "  - iso_tank_status: varchar"
+        )
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema=pruned_schema,
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 45.9}
+        )
+        
         # Mock SQL agent
         mock_sql_response = SQLGenerationResponse(
             success=True,
@@ -334,17 +370,19 @@ class TestOrchestratorAgent:
             confidence=0.9
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
         # Execute
         response = orchestrator.execute(request)
         
-        # Verify schema was passed correctly
+        # Verify pruned schema was passed to SQL Generation
         call_args = orchestrator.sql_agent.execute.call_args[0][0]
-        assert call_args.db_schema == schema
+        assert call_args.db_schema == pruned_schema
         assert "iso_tank" in call_args.db_schema
-        assert "service_tank" in call_args.db_schema
+        assert "service_tank" not in call_args.db_schema  # Pruned out
     
     def test_confidence_preserved(self, orchestrator, valid_request):
         """
@@ -405,8 +443,20 @@ class TestOrchestratorAgent:
     
     def test_metadata_enrichment(self, orchestrator, valid_request):
         """
-        Integration: Orchestrator enriches metadata with routing information.
+        Integration: Orchestrator enriches metadata with routing and schema intelligence information.
         """
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent response
         mock_sql_response = SQLGenerationResponse(
             success=True,
@@ -417,6 +467,8 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 1.23, "attempts": 1}
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
@@ -427,7 +479,12 @@ class TestOrchestratorAgent:
         assert "agent" in response.metadata
         assert response.metadata["agent"] == "SQLGenerationAgent"
         assert "routing_strategy" in response.metadata
-        assert response.metadata["routing_strategy"] == "simple"
+        assert response.metadata["routing_strategy"] == "schema_intelligence"
+        
+        # Verify schema intelligence metadata
+        assert "schema_intelligence_success" in response.metadata
+        assert response.metadata["schema_intelligence_success"] is True
+        assert "schema_token_reduction" in response.metadata
         
         # Verify original metadata is preserved
         assert "execution_time" in response.metadata
