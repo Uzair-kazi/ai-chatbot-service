@@ -21,10 +21,12 @@ Usage:
 """
 
 from agents.base import BaseAgent, AgentError, AgentExecutionError, AgentValidationError
+from agents.sql_generation import SQLGenerationAgent
 
 __all__ = [
     "BaseAgent",
     "AgentError",
     "AgentExecutionError",
     "AgentValidationError",
+    "SQLGenerationAgent",
 ]
