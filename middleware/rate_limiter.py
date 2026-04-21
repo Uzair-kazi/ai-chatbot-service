@@ -11,6 +11,7 @@ Configuration:
 
 import os
 import time
+import threading
 from typing import Dict, List, Optional
 from collections import defaultdict
 from fastapi import HTTPException, status, Request
@@ -55,13 +56,18 @@ class RateLimiter:
         self.window_seconds = window_seconds
         self.requests: Dict[str, List[float]] = defaultdict(list)
         self.last_cleanup = time.time()
+        self._lock = threading.Lock()  # Thread-safe locking for concurrent access
         
         logger.info(
             f"Rate limiter initialized: {max_requests} requests per {window_seconds}s"
         )
     
     def _cleanup_old_entries(self):
-        """Remove old timestamp entries to prevent memory leaks."""
+        """
+        Remove old timestamp entries to prevent memory leaks.
+        
+        Note: This method assumes it's called from within self._lock context.
+        """
         current_time = time.time()
         
         # Only cleanup every CLEANUP_INTERVAL_SECONDS
@@ -92,6 +98,9 @@ class RateLimiter:
         """
         Check if user has exceeded rate limit.
         
+        Thread-safe implementation using lock to prevent race conditions
+        in check-and-increment sequence.
+        
         Args:
             user_id: User identifier
         
@@ -103,33 +112,35 @@ class RateLimiter:
         current_time = time.time()
         cutoff_time = current_time - self.window_seconds
         
-        # Get user's request timestamps
-        timestamps = self.requests[user_id]
-        
-        # Filter to only timestamps within the window (sliding window)
-        recent_timestamps = [ts for ts in timestamps if ts > cutoff_time]
-        self.requests[user_id] = recent_timestamps
-        
-        # Check if limit exceeded
-        if len(recent_timestamps) >= self.max_requests:
-            # Calculate retry_after: time until oldest request expires
-            oldest_timestamp = min(recent_timestamps)
-            retry_after = int(oldest_timestamp + self.window_seconds - current_time) + 1
+        # Use lock to make check-and-increment atomic
+        with self._lock:
+            # Get user's request timestamps
+            timestamps = self.requests[user_id]
             
-            logger.warning(
-                f"Rate limit exceeded for user {user_id}: "
-                f"{len(recent_timestamps)}/{self.max_requests} requests"
-            )
+            # Filter to only timestamps within the window (sliding window)
+            recent_timestamps = [ts for ts in timestamps if ts > cutoff_time]
+            self.requests[user_id] = recent_timestamps
             
-            return False, retry_after
-        
-        # Allow request and record timestamp
-        self.requests[user_id].append(current_time)
-        
-        # Periodic cleanup
-        self._cleanup_old_entries()
-        
-        return True, None
+            # Check if limit exceeded
+            if len(recent_timestamps) >= self.max_requests:
+                # Calculate retry_after: time until oldest request expires
+                oldest_timestamp = min(recent_timestamps)
+                retry_after = int(oldest_timestamp + self.window_seconds - current_time) + 1
+                
+                logger.warning(
+                    f"Rate limit exceeded for user {user_id}: "
+                    f"{len(recent_timestamps)}/{self.max_requests} requests"
+                )
+                
+                return False, retry_after
+            
+            # Allow request and record timestamp
+            self.requests[user_id].append(current_time)
+            
+            # Periodic cleanup (still inside lock to prevent concurrent modification)
+            self._cleanup_old_entries()
+            
+            return True, None
     
     def get_rate_limit_headers(self, user_id: str) -> Dict[str, str]:
         """

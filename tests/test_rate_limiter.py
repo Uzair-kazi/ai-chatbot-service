@@ -141,9 +141,97 @@ class TestRateLimiter:
         # Old user should be cleaned up
         stats = limiter.get_stats()
         assert stats["active_users"] == 1  # Only user_456 should be active
-
-
-class TestRateLimitIntegration:
+    
+    def test_concurrent_requests_respect_rate_limit(self):
+        """Concurrency: Concurrent requests from same user respect rate limit."""
+        import threading
+        
+        limiter = RateLimiter(max_requests=10, window_seconds=60)
+        results = []
+        
+        def make_request():
+            is_allowed, _ = limiter.check_rate_limit("user_concurrent")
+            results.append(is_allowed)
+        
+        # Launch 15 concurrent threads
+        threads = []
+        for _ in range(15):
+            thread = threading.Thread(target=make_request)
+            threads.append(thread)
+            thread.start()
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        # Exactly 10 requests should be allowed, 5 should be denied
+        allowed_count = sum(1 for r in results if r is True)
+        denied_count = sum(1 for r in results if r is False)
+        
+        assert allowed_count == 10, f"Expected 10 allowed, got {allowed_count}"
+        assert denied_count == 5, f"Expected 5 denied, got {denied_count}"
+    
+    def test_concurrent_requests_from_different_users(self):
+        """Concurrency: Concurrent requests from different users don't block each other."""
+        import threading
+        
+        limiter = RateLimiter(max_requests=5, window_seconds=60)
+        results = {}
+        
+        def make_request(user_id):
+            is_allowed, _ = limiter.check_rate_limit(user_id)
+            if user_id not in results:
+                results[user_id] = []
+            results[user_id].append(is_allowed)
+        
+        # Launch 10 threads for 3 different users (30 total requests)
+        threads = []
+        for user_num in range(3):
+            user_id = f"user_{user_num}"
+            for _ in range(10):
+                thread = threading.Thread(target=make_request, args=(user_id,))
+                threads.append(thread)
+                thread.start()
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        # Each user should have exactly 5 allowed and 5 denied
+        for user_id in ["user_0", "user_1", "user_2"]:
+            allowed = sum(1 for r in results[user_id] if r is True)
+            denied = sum(1 for r in results[user_id] if r is False)
+            assert allowed == 5, f"{user_id}: Expected 5 allowed, got {allowed}"
+            assert denied == 5, f"{user_id}: Expected 5 denied, got {denied}"
+    
+    def test_high_concurrency_stress_test(self):
+        """Concurrency: High concurrency stress test (100 threads)."""
+        import threading
+        
+        limiter = RateLimiter(max_requests=20, window_seconds=60)
+        results = []
+        
+        def make_request():
+            is_allowed, _ = limiter.check_rate_limit("stress_test_user")
+            results.append(is_allowed)
+        
+        # Launch 100 concurrent threads
+        threads = []
+        for _ in range(100):
+            thread = threading.Thread(target=make_request)
+            threads.append(thread)
+            thread.start()
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        # Exactly 20 requests should be allowed, 80 should be denied
+        allowed_count = sum(1 for r in results if r is True)
+        denied_count = sum(1 for r in results if r is False)
+        
+        assert allowed_count == 20, f"Expected 20 allowed, got {allowed_count}"
+        assert denied_count == 80, f"Expected 80 denied, got {denied_count}"
     """Integration tests for rate limiting with FastAPI."""
     
     def test_rate_limit_applies_to_ask_endpoint(self):
@@ -205,3 +293,4 @@ class TestRateLimitIntegration:
             # Health endpoint may return 503 if dependencies are down,
             # but should never return 429 (rate limited)
             assert response.status_code != 429
+
