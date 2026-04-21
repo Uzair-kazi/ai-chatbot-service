@@ -10,10 +10,15 @@ from typing import Dict
 import os
 import psycopg2
 
-from api.models import QuestionRequest, AnswerResponse, ErrorResponse, ErrorDetail, HealthResponse, MetricsResponse
+from api.models import (
+    QuestionRequest, AnswerResponse, ErrorResponse, ErrorDetail,
+    HealthResponse, MetricsResponse, LoginRequest, LoginResponse, UserInfo
+)
 from middleware.auth import get_current_admin_user, extract_user_id
 from middleware.metrics_tracker import get_metrics_tracker
 from services.chatbot_pipeline import ask as pipeline_ask
+from services.user_service import get_user_by_email, verify_password
+from services.token_service import generate_token
 from config.logging_config import get_logger
 
 # Initialize logger
@@ -21,6 +26,111 @@ logger = get_logger(__name__)
 
 # Create API router
 router = APIRouter()
+
+
+@router.post(
+    "/login",
+    response_model=LoginResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid credentials"},
+        403: {"model": ErrorResponse, "description": "Admin access required"},
+        422: {"model": ErrorResponse, "description": "Validation error"},
+        503: {"model": ErrorResponse, "description": "Service unavailable"},
+    },
+    summary="Admin login endpoint",
+    description="""
+    Authenticate admin user with email and password.
+    
+    Returns a JWT token that can be used to access protected endpoints.
+    
+    **Authentication:** Not required - this is the login endpoint.
+    
+    **Rate Limiting:** 5 requests per minute per IP address (stricter than general API).
+    
+    **Security:**
+    - Only admin users can successfully authenticate
+    - Generic error messages prevent user enumeration
+    - Failed attempts are logged for security auditing
+    """,
+    tags=["Authentication"]
+)
+async def login(request: LoginRequest) -> LoginResponse:
+    """
+    Authenticate admin user and return JWT token.
+    
+    Args:
+        request: Login request containing email and password
+    
+    Returns:
+        LoginResponse with JWT token and user information
+    
+    Raises:
+        HTTPException: For authentication failures or service errors
+    """
+    logger.info(f"Login attempt for email: {request.email}")
+    
+    try:
+        # Fetch user from database
+        user = get_user_by_email(request.email)
+        
+        # Check if user exists
+        if not user:
+            logger.warning(f"Login failed: User not found for email {request.email}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials"
+            )
+        
+        # Verify password
+        if not verify_password(request.password, user["password"]):
+            logger.warning(f"Login failed: Invalid password for email {request.email}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials"
+            )
+        
+        # Check if user is admin
+        if user["role_name"].lower() != "admin":
+            logger.warning(f"Login failed: Non-admin user attempted login: {request.email} (role: {user['role_name']})")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin access required"
+            )
+        
+        # Generate JWT token
+        token = generate_token(user)
+        
+        # Log successful login
+        logger.info(f"Login successful for admin user: {request.email}")
+        
+        # Return response
+        return LoginResponse(
+            token=token,
+            user=UserInfo(
+                id=user["id"],
+                email=user["email"],
+                name=user["name"],
+                role=user["role_name"]
+            )
+        )
+    
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except psycopg2.Error as e:
+        # Database errors
+        logger.error(f"Database error during login: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporarily unavailable. Please try again later."
+        )
+    except Exception as e:
+        # Catch any unexpected errors
+        logger.error(f"Unexpected error during login: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred. Please try again."
+        )
 
 
 @router.post(
