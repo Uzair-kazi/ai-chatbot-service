@@ -706,6 +706,92 @@ class TestOrchestratorAgent:
         resolved = orchestrator._resolve_conflicts([])
         assert resolved.success is False
         assert "No agent responses" in resolved.error
+    
+    def test_fallback_logging_on_schema_intelligence_failure(self, orchestrator, valid_request, caplog):
+        """
+        Integration: Fallback logging includes token count and reason when Schema Intelligence fails.
+        """
+        import logging
+        
+        # Mock Schema Intelligence to return failure
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=False,
+            pruned_schema="",
+            selected_tables=[],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.0,
+            error="No entities extracted from question",
+            metadata={}
+        )
+        
+        # Mock SQL agent
+        mock_sql_response = SQLGenerationResponse(
+            success=True,
+            sql="SELECT * FROM iso_tank LIMIT 100;",
+            validation_issues=[],
+            retry_count=0,
+            confidence=0.9
+        )
+        
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
+        orchestrator.sql_agent = Mock()
+        orchestrator.sql_agent.execute.return_value = mock_sql_response
+        
+        # Execute with logging capture
+        with caplog.at_level(logging.WARNING):
+            response = orchestrator.execute(valid_request)
+        
+        # Verify fallback logging
+        assert any("Schema Intelligence failed" in record.message for record in caplog.records)
+        assert any("Falling back to full schema" in record.message for record in caplog.records)
+        assert any("tokens" in record.message for record in caplog.records)
+        
+        # Verify metadata includes fallback reason and token count
+        assert response.metadata["schema_intelligence_success"] is False
+        assert "schema_fallback_reason" in response.metadata
+        assert "schema_original_tokens" in response.metadata
+        assert response.metadata["schema_original_tokens"] > 0
+    
+    def test_fallback_logging_on_schema_intelligence_exception(self, orchestrator, valid_request, caplog):
+        """
+        Integration: Fallback logging includes token count and reason when Schema Intelligence raises exception.
+        """
+        import logging
+        
+        # Mock Schema Intelligence to raise exception
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.side_effect = RuntimeError("Schema parsing error")
+        
+        # Mock SQL agent
+        mock_sql_response = SQLGenerationResponse(
+            success=True,
+            sql="SELECT * FROM iso_tank LIMIT 100;",
+            validation_issues=[],
+            retry_count=0,
+            confidence=0.9
+        )
+        
+        orchestrator.sql_agent = Mock()
+        orchestrator.sql_agent.execute.return_value = mock_sql_response
+        
+        # Execute with logging capture
+        with caplog.at_level(logging.WARNING):
+            response = orchestrator.execute(valid_request)
+        
+        # Verify fallback logging
+        assert any("Schema Intelligence error" in record.message for record in caplog.records)
+        assert any("Falling back to full schema" in record.message for record in caplog.records)
+        assert any("tokens" in record.message for record in caplog.records)
+        
+        # Verify metadata includes fallback reason and token count
+        assert response.metadata["schema_intelligence_success"] is False
+        assert "schema_fallback_reason" in response.metadata
+        assert "Schema parsing error" in response.metadata["schema_fallback_reason"]
+        assert "schema_original_tokens" in response.metadata
+        assert response.metadata["schema_original_tokens"] > 0
 
 
 # Integration test with real SQL Generation agent (optional)

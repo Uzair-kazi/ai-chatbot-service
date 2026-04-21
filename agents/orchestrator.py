@@ -221,21 +221,38 @@ class OrchestratorAgent(BaseAgent):
                 )
             else:
                 # Schema Intelligence failed - fall back to full schema
+                original_token_count = len(request.db_schema) // 4  # Estimate: 1 token ≈ 4 characters
                 self.logger.warning(
                     f"Schema Intelligence failed: {schema_response.error}. "
-                    f"Falling back to full schema."
+                    f"Falling back to full schema (~{original_token_count} tokens).",
+                    extra={
+                        "fallback_reason": schema_response.error,
+                        "original_tokens": original_token_count,
+                        "schema_intelligence_success": False
+                    }
                 )
                 schema_metadata = {
                     "schema_intelligence_success": False,
-                    "schema_fallback_reason": schema_response.error
+                    "schema_fallback_reason": schema_response.error,
+                    "schema_original_tokens": original_token_count
                 }
                 
         except Exception as e:
             # Schema Intelligence error - fall back to full schema
-            self.logger.error(f"Schema Intelligence error: {e}. Falling back to full schema.")
+            original_token_count = len(request.db_schema) // 4  # Estimate: 1 token ≈ 4 characters
+            self.logger.warning(
+                f"Schema Intelligence error: {e}. "
+                f"Falling back to full schema (~{original_token_count} tokens).",
+                extra={
+                    "fallback_reason": str(e),
+                    "original_tokens": original_token_count,
+                    "schema_intelligence_success": False
+                }
+            )
             schema_metadata = {
                 "schema_intelligence_success": False,
-                "schema_fallback_reason": str(e)
+                "schema_fallback_reason": str(e),
+                "schema_original_tokens": original_token_count
             }
         
         # Step 2: Call SQL Generation with pruned (or full) schema
