@@ -26,7 +26,9 @@ class TestOrchestratorAgent:
     def orchestrator(self):
         """Create orchestrator instance for testing."""
         with patch('agents.orchestrator.SQLGenerationAgent'), \
-             patch('agents.orchestrator.SchemaIntelligenceAgent'):
+             patch('agents.orchestrator.SchemaIntelligenceAgent'), \
+             patch('agents.orchestrator.QueryRefinementAgent'), \
+             patch('agents.orchestrator.SecurityGovernanceAgent'):
             return OrchestratorAgent()
     
     @pytest.fixture
@@ -37,12 +39,66 @@ class TestOrchestratorAgent:
             db_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar"
         )
     
+    def _setup_phase3_mocks(self, orchestrator, refined_query="How many ISO tanks have status 'IN'?"):
+        """Helper to setup Phase 3 agent mocks with default successful responses."""
+        from agents.models.refinement_models import RefinementResponse
+        from agents.models.security_models import SecurityResponse
+        
+        # Mock Query Refinement
+        mock_refinement_response = RefinementResponse(
+            success=True,
+            refined_query=refined_query,
+            clarification_questions=[],
+            confidence=0.9,
+            metadata={}
+        )
+        orchestrator.query_refinement_agent = Mock()
+        orchestrator.query_refinement_agent.execute.return_value = mock_refinement_response
+        
+        # Mock Security
+        mock_security_response = SecurityResponse(
+            success=True,  # Add required success field
+            approved=True,
+            risk_score=0.1,
+            veto_reason=None,
+            alternative_suggestions=[],
+            confidence=0.9,  # Add required confidence field
+            metadata={}
+        )
+        orchestrator.security_agent = Mock()
+        orchestrator.security_agent.execute.return_value = mock_security_response
+        
+        return refined_query
+    
     # Happy path tests
     
     def test_route_simple_query_success(self, orchestrator, valid_request):
         """
-        Happy path: Route simple query through Schema Intelligence → SQL Generation → return successful response.
+        Happy path: Route simple query through Phase 3 pipeline → return successful response.
         """
+        # Mock Query Refinement response
+        from agents.models.refinement_models import RefinementResponse
+        refined_query = "How many ISO tanks have status 'IN'?"  # Refined version
+        mock_refinement_response = RefinementResponse(
+            success=True,
+            refined_query=refined_query,
+            clarification_questions=[],
+            confidence=0.9,
+            metadata={"transformations_applied": ["temporal_resolution"]}
+        )
+        
+        # Mock Security response
+        from agents.models.security_models import SecurityResponse
+        mock_security_response = SecurityResponse(
+            success=True,  # Add required success field
+            approved=True,
+            risk_score=0.1,
+            veto_reason=None,
+            alternative_suggestions=[],
+            confidence=0.9,  # Add required confidence field
+            metadata={"policies_checked": ["rbac", "data_access"]}
+        )
+        
         # Mock Schema Intelligence response
         from agents.models.schema_models import SchemaIntelligenceResponse
         mock_schema_response = SchemaIntelligenceResponse(
@@ -65,6 +121,10 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 1.23}
         )
         
+        orchestrator.query_refinement_agent = Mock()
+        orchestrator.query_refinement_agent.execute.return_value = mock_refinement_response
+        orchestrator.security_agent = Mock()
+        orchestrator.security_agent.execute.return_value = mock_security_response
         orchestrator.schema_intelligence_agent = Mock()
         orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
@@ -81,22 +141,32 @@ class TestOrchestratorAgent:
         assert response.data["retry_count"] == 0
         assert response.error is None
         assert response.metadata["agent"] == "SQLGenerationAgent"
-        assert response.metadata["routing_strategy"] == "schema_intelligence"
+        assert response.metadata["routing_strategy"] == "phase3_pipeline"  # Phase 3 strategy
         assert response.metadata["schema_intelligence_success"] is True
+        assert response.metadata["refinement_success"] is True
+        assert response.metadata["security_approved"] is True
         
-        # Verify Schema Intelligence was called
+        # Verify Query Refinement was called
+        orchestrator.query_refinement_agent.execute.assert_called_once()
+        
+        # Verify Security was called
+        orchestrator.security_agent.execute.assert_called_once()
+        
+        # Verify Schema Intelligence was called with refined query
         orchestrator.schema_intelligence_agent.execute.assert_called_once()
+        schema_call_args = orchestrator.schema_intelligence_agent.execute.call_args[0][0]
+        assert schema_call_args.question == refined_query  # Should use refined query
         
-        # Verify SQL agent was called correctly
+        # Verify SQL agent was called with refined query
         orchestrator.sql_agent.execute.assert_called_once()
         call_args = orchestrator.sql_agent.execute.call_args[0][0]
-        assert call_args.question == valid_request.question
+        assert call_args.question == refined_query  # Should use refined query, not original
         assert call_args.max_retries == 2
         assert call_args.temperature == 0.1
     
     def test_route_complex_query_success(self, orchestrator):
         """
-        Happy path: Route complex query to SQL Generation agent → return successful response.
+        Happy path: Route complex query through Phase 3 pipeline → return successful response.
         """
         # Complex query with JOIN
         complex_request = AgentRequest(
@@ -113,6 +183,29 @@ class TestOrchestratorAgent:
                 "  - id: uuid\n"
                 "  - created_at: timestamp"
             )
+        )
+        
+        # Mock Query Refinement response
+        from agents.models.refinement_models import RefinementResponse
+        refined_query = "Display ISO tanks with their vehicle entry and exit timestamps"
+        mock_refinement_response = RefinementResponse(
+            success=True,
+            refined_query=refined_query,
+            clarification_questions=[],
+            confidence=0.85,
+            metadata={"transformations_applied": ["business_term_resolution"]}
+        )
+        
+        # Mock Security response
+        from agents.models.security_models import SecurityResponse
+        mock_security_response = SecurityResponse(
+            success=True,  # Add required success field
+            approved=True,
+            risk_score=0.2,
+            veto_reason=None,
+            alternative_suggestions=[],
+            confidence=0.9,  # Add required confidence field
+            metadata={"policies_checked": ["rbac", "data_access"]}
         )
         
         # Mock Schema Intelligence response
@@ -154,6 +247,10 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 2.45}
         )
         
+        orchestrator.query_refinement_agent = Mock()
+        orchestrator.query_refinement_agent.execute.return_value = mock_refinement_response
+        orchestrator.security_agent = Mock()
+        orchestrator.security_agent.execute.return_value = mock_security_response
         orchestrator.schema_intelligence_agent = Mock()
         orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
@@ -176,6 +273,29 @@ class TestOrchestratorAgent:
         """
         Error path: SQL Generation returns low_confidence → escalate with clear error message.
         """
+        # Mock Query Refinement response
+        from agents.models.refinement_models import RefinementResponse
+        refined_query = "How many ISO tanks have status 'IN'?"
+        mock_refinement_response = RefinementResponse(
+            success=True,
+            refined_query=refined_query,
+            clarification_questions=[],
+            confidence=0.9,
+            metadata={}
+        )
+        
+        # Mock Security response
+        from agents.models.security_models import SecurityResponse
+        mock_security_response = SecurityResponse(
+            success=True,  # Add required success field
+            approved=True,
+            risk_score=0.1,
+            veto_reason=None,
+            alternative_suggestions=[],
+            confidence=0.9,  # Add required confidence field
+            metadata={}
+        )
+        
         # Mock Schema Intelligence response
         from agents.models.schema_models import SchemaIntelligenceResponse
         mock_schema_response = SchemaIntelligenceResponse(
@@ -198,6 +318,10 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 3.67}
         )
         
+        orchestrator.query_refinement_agent = Mock()
+        orchestrator.query_refinement_agent.execute.return_value = mock_refinement_response
+        orchestrator.security_agent = Mock()
+        orchestrator.security_agent.execute.return_value = mock_security_response
         orchestrator.schema_intelligence_agent = Mock()
         orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
@@ -228,6 +352,9 @@ class TestOrchestratorAgent:
         """
         Error path: SQL Generation returns failure → return error response.
         """
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator)
+        
         # Mock Schema Intelligence response
         from agents.models.schema_models import SchemaIntelligenceResponse
         mock_schema_response = SchemaIntelligenceResponse(
@@ -270,6 +397,9 @@ class TestOrchestratorAgent:
         """
         Error path: SQL Generation raises AgentValidationError → catch and return error response.
         """
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator)
+        
         # Mock Schema Intelligence response
         from agents.models.schema_models import SchemaIntelligenceResponse
         mock_schema_response = SchemaIntelligenceResponse(
@@ -303,6 +433,9 @@ class TestOrchestratorAgent:
         """
         Error path: SQL Generation raises AgentExecutionError → catch and return error response.
         """
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator)
+        
         # Mock Schema Intelligence response
         from agents.models.schema_models import SchemaIntelligenceResponse
         mock_schema_response = SchemaIntelligenceResponse(
@@ -336,6 +469,9 @@ class TestOrchestratorAgent:
         """
         Error path: Unexpected exception → catch and return error response.
         """
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator)
+        
         # Mock Schema Intelligence response
         from agents.models.schema_models import SchemaIntelligenceResponse
         mock_schema_response = SchemaIntelligenceResponse(
@@ -438,6 +574,9 @@ class TestOrchestratorAgent:
             db_schema=schema
         )
         
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator, "List all ISO tanks")
+        
         # Mock Schema Intelligence response (prunes to just iso_tank)
         from agents.models.schema_models import SchemaIntelligenceResponse
         pruned_schema = (
@@ -483,6 +622,9 @@ class TestOrchestratorAgent:
         """
         Integration: Orchestrator preserves confidence scores from SQL Generation agent.
         """
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator)
+        
         # Mock Schema Intelligence response
         from agents.models.schema_models import SchemaIntelligenceResponse
         mock_schema_response = SchemaIntelligenceResponse(
@@ -530,6 +672,9 @@ class TestOrchestratorAgent:
             context={"user_id": "123", "preferences": {"limit": 50}}
         )
         
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator, "How many ISO tanks?")
+        
         # Mock Schema Intelligence response
         from agents.models.schema_models import SchemaIntelligenceResponse
         mock_schema_response = SchemaIntelligenceResponse(
@@ -568,6 +713,9 @@ class TestOrchestratorAgent:
         """
         Integration: Orchestrator enriches metadata with routing and schema intelligence information.
         """
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator)
+        
         # Mock Schema Intelligence response
         from agents.models.schema_models import SchemaIntelligenceResponse
         mock_schema_response = SchemaIntelligenceResponse(
@@ -602,12 +750,20 @@ class TestOrchestratorAgent:
         assert "agent" in response.metadata
         assert response.metadata["agent"] == "SQLGenerationAgent"
         assert "routing_strategy" in response.metadata
-        assert response.metadata["routing_strategy"] == "schema_intelligence"
+        assert response.metadata["routing_strategy"] == "phase3_pipeline"  # Phase 3 strategy
         
         # Verify schema intelligence metadata
         assert "schema_intelligence_success" in response.metadata
         assert response.metadata["schema_intelligence_success"] is True
         assert "schema_token_reduction" in response.metadata
+        
+        # Verify Phase 3 metadata
+        assert "refinement_success" in response.metadata
+        assert response.metadata["refinement_success"] is True
+        assert "security_approved" in response.metadata
+        assert response.metadata["security_approved"] is True
+        assert "pipeline_version" in response.metadata
+        assert response.metadata["pipeline_version"] == "phase3"
         
         # Verify original metadata is preserved
         assert "execution_time" in response.metadata
@@ -620,6 +776,9 @@ class TestOrchestratorAgent:
         Integration: Orchestrator adds minimal latency overhead (<50ms).
         """
         import time
+        
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator)
         
         # Mock Schema Intelligence response
         from agents.models.schema_models import SchemaIntelligenceResponse
@@ -713,6 +872,9 @@ class TestOrchestratorAgent:
         """
         import logging
         
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator)
+        
         # Mock Schema Intelligence to return failure
         from agents.models.schema_models import SchemaIntelligenceResponse
         mock_schema_response = SchemaIntelligenceResponse(
@@ -760,6 +922,9 @@ class TestOrchestratorAgent:
         Integration: Fallback logging includes token count and reason when Schema Intelligence raises exception.
         """
         import logging
+        
+        # Setup Phase 3 mocks
+        refined_query = self._setup_phase3_mocks(orchestrator)
         
         # Mock Schema Intelligence to raise exception
         orchestrator.schema_intelligence_agent = Mock()

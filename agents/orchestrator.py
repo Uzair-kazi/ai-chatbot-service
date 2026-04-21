@@ -1,23 +1,23 @@
 """
-Orchestrator Agent with Schema Intelligence Integration
+Orchestrator Agent with Phase 3 Integration
 
 This agent analyzes incoming queries and routes them to appropriate specialized agents.
-In Phase 2, queries are routed through Schema Intelligence for schema pruning before
-SQL Generation. The orchestrator provides an extensible framework for Phase 3 when
-multiple agents will be coordinated.
+In Phase 3, queries are routed through a complete pipeline:
+Query Refinement → Security & Governance → Schema Intelligence → SQL Generation
 
-Routing logic (Phase 2):
-- All queries → Schema Intelligence agent (schema pruning)
-- Pruned schema → SQL Generation agent
-- If Schema Intelligence fails, fall back to full schema
+Routing logic (Phase 3):
+- Query Refinement: Resolve temporal ambiguity and business terminology
+- Security & Governance: Validate security policies and RBAC (veto power)
+- Schema Intelligence: Prune schema to reduce token usage
+- SQL Generation: Generate SQL with pruned schema
+- If Security blocks query, escalate to human with veto reason
 - If SQL Generation returns low confidence (<0.6), escalate to human
-- Pass-through agent responses with schema pruning metadata
 
 Future phases will add:
-- Query complexity analysis
+- Result Formatter Agent (execute SQL and format results)
+- Query complexity analysis for optimization
 - Multi-agent team formation
 - Conflict resolution between agents
-- Response synthesis from multiple agents
 """
 
 import time
@@ -25,9 +25,13 @@ from typing import Optional
 from agents.base import BaseAgent, AgentExecutionError, AgentValidationError
 from agents.sql_generation import SQLGenerationAgent
 from agents.schema_intelligence import SchemaIntelligenceAgent
+from agents.query_refinement import QueryRefinementAgent
+from agents.security_governance import SecurityGovernanceAgent
 from agents.models.agent_models import AgentRequest, AgentResponse
 from agents.models.query_models import SQLGenerationRequest, SQLGenerationResponse
 from agents.models.schema_models import SchemaIntelligenceRequest, SchemaIntelligenceResponse
+from agents.models.refinement_models import RefinementRequest, RefinementResponse
+from agents.models.security_models import SecurityRequest, SecurityResponse
 from config.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -37,11 +41,12 @@ class OrchestratorAgent(BaseAgent):
     """
     Orchestrator agent that routes queries to specialized agents.
     
-    Phase 2 implementation:
+    Phase 3 implementation:
+    - Query Refinement: Transform natural language with business glossary
+    - Security & Governance: Validate security policies (veto power)
     - Schema Intelligence: Prune schema to reduce token usage
     - SQL Generation: Generate SQL with pruned schema
-    - Fallback: Use full schema if Schema Intelligence fails
-    - Escalation: low confidence responses → human review
+    - Escalation: Security veto or low confidence → human review
     
     Future phases will add complexity analysis, multi-agent coordination,
     and conflict resolution.
@@ -49,6 +54,8 @@ class OrchestratorAgent(BaseAgent):
     Attributes:
         name: Agent name
         logger: Logger instance
+        query_refinement_agent: Query Refinement agent instance
+        security_agent: Security & Governance agent instance
         schema_intelligence_agent: Schema Intelligence agent instance
         sql_agent: SQL Generation agent instance
         confidence_threshold: Minimum confidence for automatic responses (0.6)
@@ -61,26 +68,34 @@ class OrchestratorAgent(BaseAgent):
         """Initialize the Orchestrator agent."""
         super().__init__(name="OrchestratorAgent")
         
-        # Initialize specialized agents
+        # Initialize specialized agents (Phase 3 pipeline)
+        self.query_refinement_agent = QueryRefinementAgent()
+        self.security_agent = SecurityGovernanceAgent()
         self.schema_intelligence_agent = SchemaIntelligenceAgent()
         self.sql_agent = SQLGenerationAgent()
         
-        self.logger.info("Orchestrator initialized with Schema Intelligence and SQL Generation agents")
+        self.logger.info(
+            "Orchestrator initialized with Phase 3 pipeline: "
+            "Query Refinement → Security → Schema Intelligence → SQL Generation"
+        )
     
     def execute(self, request: AgentRequest) -> AgentResponse:
         """
         Execute orchestration: analyze query and route to appropriate agent(s).
         
-        Phase 2 routing logic:
+        Phase 3 routing logic:
         1. Validate request
-        2. Route to Schema Intelligence agent for schema pruning
-        3. Route to SQL Generation agent with pruned schema
-        4. Check confidence score
-        5. Escalate if confidence < threshold
-        6. Return agent response
+        2. Route to Query Refinement agent for query transformation
+        3. Route to Security & Governance agent for policy validation
+        4. If Security blocks query (veto), escalate to human
+        5. Route to Schema Intelligence agent for schema pruning
+        6. Route to SQL Generation agent with pruned schema
+        7. Check confidence score
+        8. Escalate if confidence < threshold
+        9. Return agent response
         
         Args:
-            request: AgentRequest with question and schema
+            request: AgentRequest with question, schema, and optional user_role
             
         Returns:
             AgentResponse with success status, data, error, and confidence
@@ -94,11 +109,16 @@ class OrchestratorAgent(BaseAgent):
         # Validate request
         self._validate_request(request)
         
-        self.logger.info(f"Orchestrating request: {request.question}")
+        # Extract user_role from context (default to "viewer")
+        user_role = request.context.get("user_role", "viewer") if request.context else "viewer"
+        
+        self.logger.info(
+            f"Orchestrating request: {request.question} (user_role={user_role})"
+        )
         
         try:
-            # Phase 2: Route through Schema Intelligence → SQL Generation
-            agent_response = self._route_with_schema_intelligence(request)
+            # Phase 3: Route through complete pipeline
+            agent_response = self._route_phase3_pipeline(request, user_role)
             
             # Check if escalation is needed
             if agent_response.success and agent_response.confidence < self.CONFIDENCE_THRESHOLD:
@@ -172,6 +192,296 @@ class OrchestratorAgent(BaseAgent):
                     "error_type": "unexpected_error"
                 }
             )
+    
+    def _route_phase3_pipeline(
+        self,
+        request: AgentRequest,
+        user_role: str
+    ) -> AgentResponse:
+        """
+        Route request through Phase 3 pipeline.
+        
+        Pipeline: Refinement → Security → Schema Intelligence → SQL Generation
+        
+        Args:
+            request: AgentRequest with question and schema
+            user_role: User role for RBAC (admin, analyst, viewer)
+            
+        Returns:
+            AgentResponse from SQL Generation agent or escalation
+        """
+        self.logger.info("Routing through Phase 3 pipeline")
+        
+        # Step 1: Query Refinement
+        refined_query = request.question  # Default to original question
+        refinement_metadata = {}
+        
+        try:
+            refinement_request = RefinementRequest(
+                question=request.question,
+                db_schema=request.db_schema,
+                business_glossary=None  # Agent loads from config
+            )
+            
+            refinement_response: RefinementResponse = self.query_refinement_agent.execute(refinement_request)
+            
+            if refinement_response.success:
+                refined_query = refinement_response.refined_query
+                refinement_metadata = {
+                    "refinement_success": True,
+                    "refinement_confidence": refinement_response.confidence,
+                    "clarification_questions": refinement_response.clarification_questions,
+                    "original_question": request.question
+                }
+                
+                self.logger.info(
+                    f"Query Refinement succeeded: confidence={refinement_response.confidence:.2f}"
+                )
+                
+                # Log warning if clarification needed
+                if refinement_response.clarification_questions:
+                    self.logger.warning(
+                        f"Query may need clarification: {refinement_response.clarification_questions}"
+                    )
+            else:
+                # Refinement failed - continue with original question
+                self.logger.warning(
+                    f"Query Refinement failed: {refinement_response.error}. "
+                    f"Continuing with original question."
+                )
+                refinement_metadata = {
+                    "refinement_success": False,
+                    "refinement_error": refinement_response.error
+                }
+                
+        except Exception as e:
+            # Refinement error - continue with original question
+            self.logger.warning(
+                f"Query Refinement error: {e}. Continuing with original question."
+            )
+            refinement_metadata = {
+                "refinement_success": False,
+                "refinement_error": str(e)
+            }
+        
+        # Step 2: Security & Governance validation
+        security_metadata = {}
+        
+        try:
+            security_request = SecurityRequest(
+                question=request.question,  # Add required question field
+                refined_query=refined_query,
+                generated_sql="",  # Will be validated after SQL generation
+                user_role=user_role,
+                db_schema=request.db_schema
+            )
+            
+            security_response: SecurityResponse = self.security_agent.execute(security_request)
+            
+            security_metadata = {
+                "security_approved": security_response.approved,
+                "security_risk_score": security_response.risk_score,
+                "security_veto_reason": security_response.veto_reason
+            }
+            
+            if not security_response.approved:
+                # Security veto - escalate to human
+                self.logger.warning(
+                    f"Security veto: {security_response.veto_reason} "
+                    f"(risk_score={security_response.risk_score:.2f})"
+                )
+                
+                return self._escalate_to_human(
+                    request,
+                    AgentResponse(
+                        success=False,
+                        data={
+                            "veto_reason": security_response.veto_reason,
+                            "risk_score": security_response.risk_score,
+                            "alternative_suggestions": security_response.alternative_suggestions
+                        },
+                        error=f"Security policy violation: {security_response.veto_reason}",
+                        confidence=0.0,
+                        metadata=security_metadata
+                    ),
+                    reason=f"Security veto: {security_response.veto_reason}"
+                )
+            
+            self.logger.info(
+                f"Security validation passed: risk_score={security_response.risk_score:.2f}"
+            )
+            
+        except Exception as e:
+            # Security error - log and continue (fail open for now)
+            self.logger.error(
+                f"Security validation error: {e}. Continuing with caution.",
+                exc_info=True
+            )
+            security_metadata = {
+                "security_approved": True,  # Fail open
+                "security_error": str(e)
+            }
+        
+        # Step 3: Schema Intelligence (existing logic)
+        agent_response = self._route_with_schema_intelligence_phase3(
+            request,
+            refined_query
+        )
+        
+        # Add Phase 3 metadata
+        agent_response.metadata.update(refinement_metadata)
+        agent_response.metadata.update(security_metadata)
+        agent_response.metadata["pipeline_version"] = "phase3"
+        
+        return agent_response
+    
+    def _route_with_schema_intelligence_phase3(
+        self,
+        request: AgentRequest,
+        refined_query: str
+    ) -> AgentResponse:
+        """
+        Route request through Schema Intelligence → SQL Generation pipeline.
+        
+        Phase 3 version: Uses refined query instead of original question.
+        
+        Args:
+            request: AgentRequest with original question and schema
+            refined_query: Refined query from Query Refinement agent
+            
+        Returns:
+            AgentResponse from SQL Generation agent
+        """
+        self.logger.info("Routing through Schema Intelligence → SQL Generation pipeline")
+        
+        # Step 1: Call Schema Intelligence for schema pruning
+        pruned_schema = request.db_schema  # Default to full schema
+        schema_metadata = {}
+        
+        try:
+            schema_request = SchemaIntelligenceRequest(
+                question=refined_query,  # Use refined query
+                full_schema=request.db_schema
+            )
+            
+            schema_response: SchemaIntelligenceResponse = self.schema_intelligence_agent.execute(schema_request)
+            
+            if schema_response.success:
+                pruned_schema = schema_response.pruned_schema
+                schema_metadata = {
+                    "schema_intelligence_success": True,
+                    "schema_cache_hit": schema_response.metadata.get("cache_hit", False),
+                    "schema_token_reduction": schema_response.metadata.get("token_reduction", 0),
+                    "schema_original_tokens": schema_response.metadata.get("original_token_count", 0),
+                    "schema_pruned_tokens": schema_response.metadata.get("pruned_token_count", 0),
+                    "schema_selected_tables": len(schema_response.selected_tables),
+                    "schema_confidence": schema_response.confidence
+                }
+                
+                self.logger.info(
+                    f"Schema Intelligence succeeded: "
+                    f"{len(schema_response.selected_tables)} tables selected, "
+                    f"{schema_response.metadata.get('token_reduction', 0):.1f}% token reduction"
+                )
+            else:
+                # Schema Intelligence failed - fall back to full schema
+                original_token_count = len(request.db_schema) // 4  # Estimate: 1 token ≈ 4 characters
+                self.logger.warning(
+                    f"Schema Intelligence failed: {schema_response.error}. "
+                    f"Falling back to full schema (~{original_token_count} tokens).",
+                    extra={
+                        "fallback_reason": schema_response.error,
+                        "original_tokens": original_token_count,
+                        "schema_intelligence_success": False
+                    }
+                )
+                schema_metadata = {
+                    "schema_intelligence_success": False,
+                    "schema_fallback_reason": schema_response.error,
+                    "schema_original_tokens": original_token_count
+                }
+                
+        except Exception as e:
+            # Schema Intelligence error - fall back to full schema
+            original_token_count = len(request.db_schema) // 4  # Estimate: 1 token ≈ 4 characters
+            self.logger.warning(
+                f"Schema Intelligence error: {e}. "
+                f"Falling back to full schema (~{original_token_count} tokens).",
+                extra={
+                    "fallback_reason": str(e),
+                    "original_tokens": original_token_count,
+                    "schema_intelligence_success": False
+                }
+            )
+            schema_metadata = {
+                "schema_intelligence_success": False,
+                "schema_fallback_reason": str(e),
+                "schema_original_tokens": original_token_count
+            }
+        
+        # Step 2: Call SQL Generation with pruned (or full) schema and refined query
+        agent_response = self._route_to_sql_generation_phase3(
+            request,
+            refined_query,
+            pruned_schema
+        )
+        
+        # Add schema metadata to response
+        agent_response.metadata.update(schema_metadata)
+        
+        return agent_response
+    
+    def _route_to_sql_generation_phase3(
+        self,
+        request: AgentRequest,
+        refined_query: str,
+        schema: str
+    ) -> AgentResponse:
+        """
+        Route request to SQL Generation agent with refined query and schema.
+        
+        Phase 3 version: Uses refined query instead of original question.
+        
+        Args:
+            request: AgentRequest with original question
+            refined_query: Refined query from Query Refinement agent
+            schema: Schema to use (pruned or full)
+            
+        Returns:
+            AgentResponse from SQL Generation agent
+        """
+        self.logger.info("Routing to SQL Generation agent")
+        
+        # Convert to SQLGenerationRequest with refined query
+        sql_request = SQLGenerationRequest(
+            question=refined_query,  # Use refined query
+            db_schema=schema,  # Use provided schema (pruned or full)
+            context=request.context,
+            max_retries=2,  # Default retry count
+            temperature=0.1  # Low temperature for deterministic SQL
+        )
+        
+        # Execute SQL Generation agent
+        sql_response: SQLGenerationResponse = self.sql_agent.execute(sql_request)
+        
+        # Convert SQLGenerationResponse to AgentResponse
+        agent_response = AgentResponse(
+            success=sql_response.success,
+            data={
+                "sql": sql_response.sql,
+                "validation_issues": sql_response.validation_issues,
+                "retry_count": sql_response.retry_count
+            } if sql_response.success else None,
+            error=sql_response.error,
+            confidence=sql_response.confidence,
+            metadata={
+                **sql_response.metadata,
+                "agent": "SQLGenerationAgent",
+                "routing_strategy": "phase3_pipeline"
+            }
+        )
+        
+        return agent_response
     
     def _route_with_schema_intelligence(self, request: AgentRequest) -> AgentResponse:
         """

@@ -45,9 +45,9 @@ class RefinementRequest(AgentRequest):
         )
     """
     
-    business_glossary: Dict[str, Dict[str, str]] = Field(
-        default_factory=dict,
-        description="Business terminology mappings and temporal terms"
+    business_glossary: Optional[Dict[str, Dict[str, str]]] = Field(
+        default=None,
+        description="Business terminology mappings and temporal terms (None to use agent's default)"
     )
     current_datetime: datetime = Field(
         default_factory=datetime.now,
@@ -56,8 +56,11 @@ class RefinementRequest(AgentRequest):
     
     @field_validator("business_glossary")
     @classmethod
-    def validate_business_glossary(cls, v: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    def validate_business_glossary(cls, v: Optional[Dict[str, Dict[str, str]]]) -> Optional[Dict[str, Dict[str, str]]]:
         """Validate that business_glossary has expected structure."""
+        if v is None:
+            return v
+        
         if not isinstance(v, dict):
             raise ValueError("Business glossary must be a dictionary")
         

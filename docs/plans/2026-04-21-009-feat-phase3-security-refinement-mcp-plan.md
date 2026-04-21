@@ -321,7 +321,7 @@ From origin document:
 
 ---
 
-- [ ] **Unit 4: Implement Query Refinement Agent**
+- [x] **Unit 4: Implement Query Refinement Agent**
 
 **Goal:** LLM-based query transformation with business glossary
 
@@ -370,7 +370,7 @@ From origin document:
 
 ---
 
-- [ ] **Unit 5: Implement MCP client wrapper**
+- [x] **Unit 5: Implement MCP client wrapper**
 
 **Goal:** Standardized database operations through MCP
 
