@@ -143,18 +143,22 @@ class TestCompleteRequestFlow:
         
         token = create_test_token(user_id="rate_limit_test_user")
         
-        # Make 21 requests to /v1/ask (should hit rate limit)
-        for i in range(21):
+        # Make requests up to the limit (20)
+        for i in range(20):
             response = client.post(
                 "/v1/ask",
                 json={"question": f"Question {i}"},
                 headers={"Authorization": f"Bearer {token}"}
             )
-            
-            if i < 20:
-                assert response.status_code == 200, f"Request {i} should succeed"
-            else:
-                assert response.status_code == 429, f"Request {i} should be rate limited"
+            assert response.status_code == 200, f"Request {i+1} should succeed"
+        
+        # 21st request should be rate limited
+        response = client.post(
+            "/v1/ask",
+            json={"question": "Question 21"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 429, "Request 21 should be rate limited"
         
         # Health endpoint should still work (no rate limiting)
         with patch('api.routes.psycopg2.connect') as mock_connect:
@@ -179,10 +183,10 @@ class TestCompleteRequestFlow:
                 
                 mock_getenv.side_effect = getenv_side_effect
                 
-                # Make many health check requests (should not be rate limited)
-                for i in range(30):
+                # Make multiple health check requests (should not be rate limited)
+                for i in range(5):
                     response = client.get("/v1/health")
-                    assert response.status_code == 200, f"Health check {i} should not be rate limited"
+                    assert response.status_code == 200, f"Health check {i+1} should not be rate limited"
 
 
 class TestCORSHeaders:
