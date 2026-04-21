@@ -119,7 +119,7 @@ class SchemaIntelligenceRequest(BaseModel):
     question: str = Field(..., min_length=1)
     full_schema: str = Field(..., min_length=1)
     max_depth: int = Field(default=2, ge=0, le=5)
-    similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    similarity_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
 
 
 class SchemaIntelligenceResponse(BaseModel):

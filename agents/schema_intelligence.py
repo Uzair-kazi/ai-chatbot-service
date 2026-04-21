@@ -354,17 +354,27 @@ class SchemaIntelligenceAgent(BaseAgent):
                         match_type="fuzzy_table"
                     ))
             
-            # Try fuzzy match on column names
+            # Try fuzzy match on column names (with slightly lower threshold)
+            column_threshold = max(threshold - 0.1, 0.5)  # Allow more lenient column matching
             for table, columns in table_columns.items():
                 for column in columns:
-                    similarity = self._calculate_similarity(entity, column.lower())
-                    if similarity >= threshold:
+                    # Check if entity is contained in column name (e.g., "client" in "croyance_client_name")
+                    if entity in column.lower():
                         matches.append(EntityMatch(
                             entity=entity,
                             table=table,
-                            similarity=similarity,
-                            match_type="fuzzy_column"
+                            similarity=0.8,  # High similarity for substring match
+                            match_type="substring_column"
                         ))
+                    else:
+                        similarity = self._calculate_similarity(entity, column.lower())
+                        if similarity >= column_threshold:
+                            matches.append(EntityMatch(
+                                entity=entity,
+                                table=table,
+                                similarity=similarity,
+                                match_type="fuzzy_column"
+                            ))
         
         # Remove duplicates (keep highest similarity for each entity-table pair)
         unique_matches = {}
@@ -524,6 +534,7 @@ class SchemaIntelligenceAgent(BaseAgent):
         pruned_lines = []
         current_table = None
         include_table = False
+        in_table_section = False
         
         # Parse and filter schema
         for line in full_schema.split('\n'):
@@ -532,9 +543,28 @@ class SchemaIntelligenceAgent(BaseAgent):
             if table_match:
                 current_table = table_match.group(1)
                 include_table = current_table in selected_set
+                in_table_section = True
+                
+                # Include table header line if selected
+                if include_table:
+                    pruned_lines.append(line)
+                continue
+            
+            # Check for separator line (dashes)
+            if line.strip().startswith('-' * 10):
+                if include_table:
+                    pruned_lines.append(line)
+                continue
+            
+            # Check for empty line (might signal end of table section)
+            if not line.strip():
+                if include_table:
+                    pruned_lines.append(line)
+                in_table_section = False
+                continue
             
             # Include line if we're in a selected table
-            if include_table:
+            if include_table and in_table_section:
                 pruned_lines.append(line)
         
         # Add JOIN hints section
