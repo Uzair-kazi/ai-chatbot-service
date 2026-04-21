@@ -254,3 +254,48 @@ def test_executor_result_structure():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+
+def test_get_executor_concurrent_singleton_with_mock():
+    """Unit test: Verify get_executor creates only one instance under concurrent access."""
+    import threading
+    from unittest.mock import patch, MagicMock
+    
+    # Reset singleton
+    close_executor()
+    
+    executors = []
+    pool_ids = []
+    
+    # Mock the database connection
+    with patch('services.sql_executor.psycopg2.pool.SimpleConnectionPool') as mock_pool:
+        mock_pool_instance = MagicMock()
+        mock_pool.return_value = mock_pool_instance
+        
+        def get_and_store():
+            executor = get_executor()
+            executors.append(executor)
+            pool_ids.append(id(executor.pool))
+        
+        # Launch 10 concurrent threads
+        threads = []
+        for _ in range(10):
+            thread = threading.Thread(target=get_and_store)
+            threads.append(thread)
+            thread.start()
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        # All executors should be the same instance
+        assert len(set(id(e) for e in executors)) == 1, "All threads should get the same executor instance"
+        
+        # All pools should be the same instance
+        assert len(set(pool_ids)) == 1, "Only one connection pool should be created"
+        
+        # Pool should have been created exactly once
+        assert mock_pool.call_count == 1, f"Pool should be created once, but was created {mock_pool.call_count} times"
+    
+    close_executor()

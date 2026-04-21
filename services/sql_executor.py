@@ -7,6 +7,7 @@ with timeout protection and comprehensive error handling.
 
 import os
 import time
+import threading
 from typing import Dict, List, Any
 import psycopg2
 from psycopg2 import pool
@@ -18,6 +19,10 @@ from config.logging_config import get_logger
 load_dotenv()
 
 logger = get_logger(__name__)
+
+
+# Module-level lock for singleton initialization
+_executor_lock = threading.Lock()
 
 
 # Custom exceptions
@@ -171,8 +176,8 @@ def get_executor() -> SQLExecutor:
     """
     Get the global SQL executor instance.
     
-    This is a convenience function that creates a global SQLExecutor
-    instance on first call and reuses it for subsequent calls.
+    Thread-safe singleton implementation using double-checked locking pattern.
+    This ensures only one connection pool is created even under concurrent access.
     
     Returns:
         SQLExecutor instance
@@ -183,8 +188,15 @@ def get_executor() -> SQLExecutor:
     """
     global _executor
     
-    if _executor is None:
-        _executor = SQLExecutor()
+    # First check without lock (fast path)
+    if _executor is not None:
+        return _executor
+    
+    # Acquire lock for initialization
+    with _executor_lock:
+        # Double-check after acquiring lock
+        if _executor is None:
+            _executor = SQLExecutor()
     
     return _executor
 
