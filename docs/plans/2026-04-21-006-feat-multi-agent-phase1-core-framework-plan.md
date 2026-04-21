@@ -259,7 +259,7 @@ class SQLGenerationResponse(AgentResponse):
 - Base agent enforces abstract method implementation
 - Tests pass with 100% coverage for base.py and models/
 
-- [ ] **Unit 2: SQL Generation Agent with Self-Critique Loop**
+- [x] **Unit 2: SQL Generation Agent with Self-Critique Loop**
 
 **Goal:** Implement SQL Generation agent that generates SQL, validates it against the schema, and retries with error feedback if validation fails.
 
@@ -305,7 +305,7 @@ class SQLGenerationResponse(AgentResponse):
 - Validation feedback is specific enough to guide regeneration
 - Token usage is logged for cost tracking
 
-- [ ] **Unit 3: Orchestrator Agent with Simple Routing**
+- [x] **Unit 3: Orchestrator Agent with Simple Routing**
 
 **Goal:** Implement Orchestrator agent that analyzes query complexity and routes to appropriate agents (currently only SQL Generation, but extensible for future agents).
 
@@ -345,7 +345,7 @@ class SQLGenerationResponse(AgentResponse):
 - Orchestrator adds minimal latency overhead (<50ms)
 - Error messages are clear and actionable
 
-- [ ] **Unit 4: Integration with Existing Chatbot Pipeline**
+- [x] **Unit 4: Integration with Existing Chatbot Pipeline**
 
 **Goal:** Integrate the new multi-agent system into the existing chatbot pipeline as an alternative to the current single-LLM approach.
 
