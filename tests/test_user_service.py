@@ -8,8 +8,9 @@ import pytest
 import os
 from unittest.mock import patch, MagicMock
 import psycopg2
+import bcrypt
 
-from services.user_service import get_user_by_email
+from services.user_service import get_user_by_email, verify_password
 
 
 class TestGetUserByEmail:
@@ -81,3 +82,60 @@ class TestGetUserByEmail:
         """Error path: Missing DB_URL raises ValueError"""
         with pytest.raises(ValueError, match="DB_URL environment variable is not configured"):
             get_user_by_email("test@example.com")
+
+
+
+class TestVerifyPassword:
+    """Tests for verify_password function"""
+    
+    def test_correct_password_returns_true(self):
+        """Happy path: Correct password against valid bcrypt hash returns True"""
+        # Create a test password and hash
+        password = "test_password_123"
+        hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        result = verify_password(password, hashed)
+        
+        assert result is True
+    
+    def test_incorrect_password_returns_false(self):
+        """Happy path: Incorrect password against valid bcrypt hash returns False"""
+        # Create a test password and hash
+        password = "test_password_123"
+        wrong_password = "wrong_password"
+        hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        result = verify_password(wrong_password, hashed)
+        
+        assert result is False
+    
+    def test_empty_password_returns_false(self):
+        """Edge case: Empty password against hash returns False"""
+        # Create a test hash
+        hashed = bcrypt.hashpw(b"test", bcrypt.gensalt()).decode('utf-8')
+        
+        result = verify_password("", hashed)
+        
+        assert result is False
+    
+    def test_empty_hash_raises_value_error(self):
+        """Edge case: Empty hash string raises ValueError"""
+        with pytest.raises(ValueError, match="Hash cannot be empty"):
+            verify_password("test_password", "")
+    
+    def test_malformed_hash_raises_value_error(self):
+        """Edge case: Malformed hash string raises ValueError"""
+        with pytest.raises(ValueError, match="Invalid hash format"):
+            verify_password("test_password", "not_a_valid_bcrypt_hash")
+    
+    def test_none_password_raises_type_error(self):
+        """Error path: None value for password raises TypeError"""
+        hashed = bcrypt.hashpw(b"test", bcrypt.gensalt()).decode('utf-8')
+        
+        with pytest.raises(TypeError, match="Password and hash cannot be None"):
+            verify_password(None, hashed)
+    
+    def test_none_hash_raises_type_error(self):
+        """Error path: None value for hash raises TypeError"""
+        with pytest.raises(TypeError, match="Password and hash cannot be None"):
+            verify_password("test_password", None)

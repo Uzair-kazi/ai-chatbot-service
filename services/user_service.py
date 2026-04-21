@@ -9,6 +9,7 @@ import os
 from typing import Dict, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import bcrypt
 from dotenv import load_dotenv
 
 from config.logging_config import get_logger
@@ -82,4 +83,54 @@ def get_user_by_email(email: str) -> Optional[Dict]:
         raise
 
 
-__all__ = ["get_user_by_email"]
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """
+    Verify a plain text password against a bcrypt hashed password.
+    
+    Uses bcrypt.checkpw() which provides constant-time comparison
+    to prevent timing attacks.
+    
+    Args:
+        plain_password: Plain text password to verify
+        hashed_password: Bcrypt hashed password from database
+        
+    Returns:
+        True if password matches, False otherwise
+        
+    Raises:
+        TypeError: If either parameter is None
+        ValueError: If hashed_password is empty or malformed
+    """
+    # Validate inputs
+    if plain_password is None or hashed_password is None:
+        raise TypeError("Password and hash cannot be None")
+    
+    if not isinstance(plain_password, str) or not isinstance(hashed_password, str):
+        raise TypeError("Password and hash must be strings")
+    
+    if not hashed_password or not hashed_password.strip():
+        raise ValueError("Hash cannot be empty")
+    
+    # Handle empty password - always return False
+    if not plain_password:
+        return False
+    
+    try:
+        # Convert strings to bytes for bcrypt
+        password_bytes = plain_password.encode('utf-8')
+        hash_bytes = hashed_password.encode('utf-8')
+        
+        # Use bcrypt's constant-time comparison
+        return bcrypt.checkpw(password_bytes, hash_bytes)
+        
+    except ValueError as e:
+        # Malformed hash format
+        logger.debug(f"Invalid hash format: {e}")
+        raise ValueError(f"Invalid hash format: {e}")
+    except Exception as e:
+        # Other bcrypt errors
+        logger.error(f"Password verification error: {e}")
+        raise
+
+
+__all__ = ["get_user_by_email", "verify_password"]
