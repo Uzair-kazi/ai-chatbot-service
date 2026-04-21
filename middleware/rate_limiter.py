@@ -57,6 +57,7 @@ class RateLimiter:
         self.requests: Dict[str, List[float]] = defaultdict(list)
         self.last_cleanup = time.time()
         self._lock = threading.Lock()  # Thread-safe locking for concurrent access
+        self._shutdown = False  # Shutdown flag for graceful cleanup termination
         
         logger.info(
             f"Rate limiter initialized: {max_requests} requests per {window_seconds}s"
@@ -67,7 +68,12 @@ class RateLimiter:
         Remove old timestamp entries to prevent memory leaks.
         
         Note: This method assumes it's called from within self._lock context.
+        Checks shutdown flag to allow graceful termination.
         """
+        # Check shutdown flag
+        if self._shutdown:
+            return
+        
         current_time = time.time()
         
         # Only cleanup every CLEANUP_INTERVAL_SECONDS
@@ -93,6 +99,16 @@ class RateLimiter:
         
         if users_to_remove:
             logger.debug(f"Cleaned up {len(users_to_remove)} inactive users from rate limiter")
+    
+    def shutdown(self):
+        """
+        Gracefully shutdown the rate limiter.
+        
+        Sets shutdown flag to stop cleanup operations.
+        Should be called during application shutdown.
+        """
+        self._shutdown = True
+        logger.info("Rate limiter shutdown initiated")
     
     def check_rate_limit(self, user_id: str) -> tuple[bool, Optional[int]]:
         """
