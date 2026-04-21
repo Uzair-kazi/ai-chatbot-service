@@ -43,15 +43,24 @@ class PipelineError(Exception):
     pass
 
 
-def ask(question: str) -> Dict[str, Any]:
+# Exception categories for retry logic
+RETRYABLE_EXCEPTIONS = (DatabaseConnectionError, QueryTimeoutError)
+FATAL_EXCEPTIONS = (SQLSyntaxError, PermissionDeniedError, SQLGenerationError)
+
+
+def ask(question: str, _retry_count: int = 0) -> Dict[str, Any]:
     """
     Process a natural language question and return a formatted answer.
     
     This is the main entry point for the chatbot pipeline. It orchestrates
     all stages from SQL generation to answer formatting.
     
+    Implements retry logic for transient failures (database connection, timeouts).
+    Fatal errors (syntax, permissions) are not retried.
+    
     Args:
         question: Natural language question from user
+        _retry_count: Internal retry counter (do not set manually)
         
     Returns:
         Dictionary with:
@@ -69,6 +78,7 @@ def ask(question: str) -> Dict[str, Any]:
         "SELECT COUNT(*) FROM iso_tank WHERE iso_tank_status = 'IN' LIMIT 100;"
     """
     start_time = time.time()
+    max_retries = 1  # Retry once for transient failures
     
     logger.info(f"=== Pipeline started for question: {question} ===")
     
@@ -146,55 +156,64 @@ def ask(question: str) -> Dict[str, Any]:
             "status_code": 200
         }
         
-    except SQLGenerationError as e:
-        logger.error(f"SQL generation failed: {e}")
-        return {
-            "answer": "Failed to generate SQL query. Please try rephrasing your question.",
-            "sql": "",
-            "rows_count": 0,
-            "status_code": 500,
-            "error": str(e)
-        }
+    except RETRYABLE_EXCEPTIONS as e:
+        # Transient failure - retry once
+        exception_type = type(e).__name__
+        logger.warning(f"Retryable exception ({exception_type}): {e}")
         
-    except QueryTimeoutError as e:
-        logger.error(f"Query timeout: {e}")
-        return {
-            "answer": "Query took too long. Try simplifying your question.",
-            "sql": sql if 'sql' in locals() else "",
-            "rows_count": 0,
-            "status_code": 504,
-            "error": str(e)
-        }
+        if _retry_count < max_retries:
+            logger.info(f"Retrying request (attempt {_retry_count + 1}/{max_retries})...")
+            time.sleep(0.5 * (2 ** _retry_count))  # Exponential backoff: 0.5s, 1s
+            return ask(question, _retry_count=_retry_count + 1)
+        else:
+            logger.error(f"Max retries ({max_retries}) exceeded for {exception_type}")
+            
+            if isinstance(e, QueryTimeoutError):
+                return {
+                    "answer": "Query took too long. Try simplifying your question.",
+                    "sql": sql if 'sql' in locals() else "",
+                    "rows_count": 0,
+                    "status_code": 504,
+                    "error": str(e)
+                }
+            else:  # DatabaseConnectionError
+                return {
+                    "answer": "Database unavailable. Try again shortly.",
+                    "sql": sql if 'sql' in locals() else "",
+                    "rows_count": 0,
+                    "status_code": 503,
+                    "error": str(e)
+                }
         
-    except DatabaseConnectionError as e:
-        logger.error(f"Database connection error: {e}")
-        return {
-            "answer": "Database unavailable. Try again shortly.",
-            "sql": sql if 'sql' in locals() else "",
-            "rows_count": 0,
-            "status_code": 503,
-            "error": str(e)
-        }
+    except FATAL_EXCEPTIONS as e:
+        # Fatal error - do not retry
+        exception_type = type(e).__name__
+        logger.error(f"Fatal exception ({exception_type}): {e}")
         
-    except SQLSyntaxError as e:
-        logger.error(f"SQL syntax error: {e}")
-        return {
-            "answer": "Invalid SQL query generated. Try rephrasing your question.",
-            "sql": sql if 'sql' in locals() else "",
-            "rows_count": 0,
-            "status_code": 400,
-            "error": str(e)
-        }
-        
-    except PermissionDeniedError as e:
-        logger.error(f"Permission denied: {e}")
-        return {
-            "answer": "Access denied to that table or column.",
-            "sql": sql if 'sql' in locals() else "",
-            "rows_count": 0,
-            "status_code": 403,
-            "error": str(e)
-        }
+        if isinstance(e, SQLGenerationError):
+            return {
+                "answer": "Failed to generate SQL query. Please try rephrasing your question.",
+                "sql": "",
+                "rows_count": 0,
+                "status_code": 500,
+                "error": str(e)
+            }
+        elif isinstance(e, SQLSyntaxError):
+            return {
+                "answer": "Invalid SQL query generated. Try rephrasing your question.",
+                "sql": sql if 'sql' in locals() else "",
+                "rows_count": 0,
+                "status_code": 400,
+                "error": str(e)
+            }
+        elif isinstance(e, PermissionDeniedError):
+            return {
+                "answer": "Access denied to that table or column.",
+                "sql": sql if 'sql' in locals() else "",
+                "rows_count": 0,
+                "status_code": 403,
+                "error": str(e)
+            }
         
     except AnswerFormattingError as e:
         logger.error(f"Answer formatting failed: {e}")
