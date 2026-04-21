@@ -56,6 +56,9 @@ class SchemaIntelligenceAgent(BaseAgent):
     """
     
     # Common English stopwords to filter from entity extraction
+    # Note: SQL keywords like "show", "list", "get" are intentionally NOT included
+    # because they don't cause false positive table matches (similarity < 0.6 threshold)
+    # and might be legitimate entities in some contexts (e.g., "show" as a table name).
     STOPWORDS = {
         'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
         'has', 'have', 'in', 'is', 'it', 'of', 'on', 'that', 'the', 'to',

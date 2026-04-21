@@ -162,9 +162,30 @@ class TestEntityExtraction:
         
         entities = agent._extract_entities("Show me ISO tanks")
         
+        assert "show" in entities  # "show" is extracted (not a stopword currently)
         assert "iso" in entities
         assert "tanks" in entities
         assert "ISO" not in entities  # Should be lowercased
+    
+    def test_extract_entities_sql_keywords(self):
+        """Edge case: SQL keywords like 'show', 'list', 'get' are extracted."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Test "show"
+        entities = agent._extract_entities("show me tanks")
+        assert "show" in entities
+        assert "tanks" in entities
+        
+        # Test "list"
+        entities = agent._extract_entities("list all clients")
+        assert "list" in entities
+        assert "clients" in entities
+        
+        # Test "get"
+        entities = agent._extract_entities("get tank status")
+        assert "get" in entities
+        assert "tank" in entities
+        assert "status" in entities
 
 
 class TestEntityTableMatching:
@@ -249,6 +270,38 @@ class TestEntityTableMatching:
         # Should have at most one match per entity-table pair
         entity_table_pairs = [(m.entity, m.table) for m in matches]
         assert len(entity_table_pairs) == len(set(entity_table_pairs))
+    
+    def test_sql_keywords_dont_cause_false_positives(self):
+        """Integration: SQL keywords like 'show', 'list', 'get' don't cause false positive table matches."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Test "show" - should not match any table
+        entities = {"show"}
+        tables = {"iso_tank", "vehicle_in", "survey_form"}
+        matches = agent._match_entities_to_tables(entities, tables, SCHEMA_WITH_FKS, 0.6)
+        # "show" has low similarity to all tables, should not match
+        assert len(matches) == 0
+        
+        # Test "list" - should not match any table
+        entities = {"list"}
+        tables = {"iso_tank", "vehicle_in", "survey_form"}
+        matches = agent._match_entities_to_tables(entities, tables, SCHEMA_WITH_FKS, 0.6)
+        # "list" has low similarity to all tables, should not match
+        assert len(matches) == 0
+        
+        # Test "get" - should not match any table
+        entities = {"get"}
+        tables = {"iso_tank", "vehicle_in", "survey_form"}
+        matches = agent._match_entities_to_tables(entities, tables, SCHEMA_WITH_FKS, 0.6)
+        # "get" has low similarity to all tables, should not match
+        assert len(matches) == 0
+        
+        # Test that legitimate entities still match
+        entities = {"tank"}
+        tables = {"iso_tank", "service_tank"}
+        matches = agent._match_entities_to_tables(entities, tables, SCHEMA_COMPLEX, 0.6)
+        # "tank" should match tank tables
+        assert len(matches) > 0
 
 
 class TestGraphTraversal:
