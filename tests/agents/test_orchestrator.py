@@ -25,7 +25,8 @@ class TestOrchestratorAgent:
     @pytest.fixture
     def orchestrator(self):
         """Create orchestrator instance for testing."""
-        with patch('agents.orchestrator.SQLGenerationAgent'):
+        with patch('agents.orchestrator.SQLGenerationAgent'), \
+             patch('agents.orchestrator.SchemaIntelligenceAgent'):
             return OrchestratorAgent()
     
     @pytest.fixture
@@ -40,8 +41,20 @@ class TestOrchestratorAgent:
     
     def test_route_simple_query_success(self, orchestrator, valid_request):
         """
-        Happy path: Route simple query to SQL Generation agent → return successful response.
+        Happy path: Route simple query through Schema Intelligence → SQL Generation → return successful response.
         """
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent response
         mock_sql_response = SQLGenerationResponse(
             success=True,
@@ -52,6 +65,8 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 1.23}
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
@@ -66,13 +81,16 @@ class TestOrchestratorAgent:
         assert response.data["retry_count"] == 0
         assert response.error is None
         assert response.metadata["agent"] == "SQLGenerationAgent"
-        assert response.metadata["routing_strategy"] == "simple"
+        assert response.metadata["routing_strategy"] == "schema_intelligence"
+        assert response.metadata["schema_intelligence_success"] is True
+        
+        # Verify Schema Intelligence was called
+        orchestrator.schema_intelligence_agent.execute.assert_called_once()
         
         # Verify SQL agent was called correctly
         orchestrator.sql_agent.execute.assert_called_once()
         call_args = orchestrator.sql_agent.execute.call_args[0][0]
         assert call_args.question == valid_request.question
-        assert call_args.db_schema == valid_request.db_schema
         assert call_args.max_retries == 2
         assert call_args.temperature == 0.1
     
@@ -97,6 +115,29 @@ class TestOrchestratorAgent:
             )
         )
         
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema=(
+                "Table: iso_tank\n"
+                "  - id: uuid\n"
+                "  - vehicle_in_id: uuid\n"
+                "  - vehicle_out_id: uuid\n"
+                "Table: vehicle_in\n"
+                "  - id: uuid\n"
+                "  - created_at: timestamp\n"
+                "Table: vehicle_out\n"
+                "  - id: uuid\n"
+                "  - created_at: timestamp"
+            ),
+            selected_tables=["iso_tank", "vehicle_in", "vehicle_out"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent response
         mock_sql_response = SQLGenerationResponse(
             success=True,
@@ -113,6 +154,8 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 2.45}
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
@@ -133,6 +176,18 @@ class TestOrchestratorAgent:
         """
         Error path: SQL Generation returns low_confidence → escalate with clear error message.
         """
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent response with low confidence
         mock_sql_response = SQLGenerationResponse(
             success=True,
@@ -143,6 +198,8 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 3.67}
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
@@ -171,6 +228,18 @@ class TestOrchestratorAgent:
         """
         Error path: SQL Generation returns failure → return error response.
         """
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent response with failure
         mock_sql_response = SQLGenerationResponse(
             success=False,
@@ -182,6 +251,8 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 3.12}
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
@@ -199,7 +270,21 @@ class TestOrchestratorAgent:
         """
         Error path: SQL Generation raises AgentValidationError → catch and return error response.
         """
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent to raise validation error
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.side_effect = AgentValidationError("Invalid schema format")
         
@@ -218,7 +303,21 @@ class TestOrchestratorAgent:
         """
         Error path: SQL Generation raises AgentExecutionError → catch and return error response.
         """
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent to raise execution error
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.side_effect = AgentExecutionError("AI provider timeout")
         
@@ -237,7 +336,21 @@ class TestOrchestratorAgent:
         """
         Error path: Unexpected exception → catch and return error response.
         """
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent to raise unexpected exception
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.side_effect = RuntimeError("Unexpected error")
         
@@ -307,7 +420,7 @@ class TestOrchestratorAgent:
     
     def test_schema_passed_correctly(self, orchestrator):
         """
-        Integration: Orchestrator correctly passes schema to SQL Generation agent.
+        Integration: Orchestrator passes pruned schema from Schema Intelligence to SQL Generation agent.
         """
         # Create request with specific schema
         schema = (
@@ -325,6 +438,24 @@ class TestOrchestratorAgent:
             db_schema=schema
         )
         
+        # Mock Schema Intelligence response (prunes to just iso_tank)
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        pruned_schema = (
+            "Table: iso_tank\n"
+            "  - id: uuid\n"
+            "  - tank_number: varchar\n"
+            "  - iso_tank_status: varchar"
+        )
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema=pruned_schema,
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 45.9}
+        )
+        
         # Mock SQL agent
         mock_sql_response = SQLGenerationResponse(
             success=True,
@@ -334,22 +465,36 @@ class TestOrchestratorAgent:
             confidence=0.9
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
         # Execute
         response = orchestrator.execute(request)
         
-        # Verify schema was passed correctly
+        # Verify pruned schema was passed to SQL Generation
         call_args = orchestrator.sql_agent.execute.call_args[0][0]
-        assert call_args.db_schema == schema
+        assert call_args.db_schema == pruned_schema
         assert "iso_tank" in call_args.db_schema
-        assert "service_tank" in call_args.db_schema
+        assert "service_tank" not in call_args.db_schema  # Pruned out
     
     def test_confidence_preserved(self, orchestrator, valid_request):
         """
         Integration: Orchestrator preserves confidence scores from SQL Generation agent.
         """
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Test different confidence levels
         confidence_levels = [0.9, 0.75, 0.6, 0.45]
         
@@ -363,6 +508,8 @@ class TestOrchestratorAgent:
                 confidence=expected_confidence
             )
             
+            orchestrator.schema_intelligence_agent = Mock()
+            orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
             orchestrator.sql_agent = Mock()
             orchestrator.sql_agent.execute.return_value = mock_sql_response
             
@@ -383,6 +530,18 @@ class TestOrchestratorAgent:
             context={"user_id": "123", "preferences": {"limit": 50}}
         )
         
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent
         mock_sql_response = SQLGenerationResponse(
             success=True,
@@ -392,6 +551,8 @@ class TestOrchestratorAgent:
             confidence=0.9
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
@@ -405,8 +566,20 @@ class TestOrchestratorAgent:
     
     def test_metadata_enrichment(self, orchestrator, valid_request):
         """
-        Integration: Orchestrator enriches metadata with routing information.
+        Integration: Orchestrator enriches metadata with routing and schema intelligence information.
         """
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent response
         mock_sql_response = SQLGenerationResponse(
             success=True,
@@ -417,6 +590,8 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 1.23, "attempts": 1}
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
@@ -427,7 +602,12 @@ class TestOrchestratorAgent:
         assert "agent" in response.metadata
         assert response.metadata["agent"] == "SQLGenerationAgent"
         assert "routing_strategy" in response.metadata
-        assert response.metadata["routing_strategy"] == "simple"
+        assert response.metadata["routing_strategy"] == "schema_intelligence"
+        
+        # Verify schema intelligence metadata
+        assert "schema_intelligence_success" in response.metadata
+        assert response.metadata["schema_intelligence_success"] is True
+        assert "schema_token_reduction" in response.metadata
         
         # Verify original metadata is preserved
         assert "execution_time" in response.metadata
@@ -441,6 +621,18 @@ class TestOrchestratorAgent:
         """
         import time
         
+        # Mock Schema Intelligence response
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=True,
+            pruned_schema="Table: iso_tank\n  - id: uuid\n  - iso_tank_status: varchar",
+            selected_tables=["iso_tank"],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.9,
+            metadata={"cache_hit": False, "token_reduction": 0}
+        )
+        
         # Mock SQL agent with instant response
         mock_sql_response = SQLGenerationResponse(
             success=True,
@@ -451,6 +643,8 @@ class TestOrchestratorAgent:
             metadata={"execution_time": 0.0}
         )
         
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
         orchestrator.sql_agent = Mock()
         orchestrator.sql_agent.execute.return_value = mock_sql_response
         
@@ -512,6 +706,92 @@ class TestOrchestratorAgent:
         resolved = orchestrator._resolve_conflicts([])
         assert resolved.success is False
         assert "No agent responses" in resolved.error
+    
+    def test_fallback_logging_on_schema_intelligence_failure(self, orchestrator, valid_request, caplog):
+        """
+        Integration: Fallback logging includes token count and reason when Schema Intelligence fails.
+        """
+        import logging
+        
+        # Mock Schema Intelligence to return failure
+        from agents.models.schema_models import SchemaIntelligenceResponse
+        mock_schema_response = SchemaIntelligenceResponse(
+            success=False,
+            pruned_schema="",
+            selected_tables=[],
+            join_hints=[],
+            entity_matches=[],
+            confidence=0.0,
+            error="No entities extracted from question",
+            metadata={}
+        )
+        
+        # Mock SQL agent
+        mock_sql_response = SQLGenerationResponse(
+            success=True,
+            sql="SELECT * FROM iso_tank LIMIT 100;",
+            validation_issues=[],
+            retry_count=0,
+            confidence=0.9
+        )
+        
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.return_value = mock_schema_response
+        orchestrator.sql_agent = Mock()
+        orchestrator.sql_agent.execute.return_value = mock_sql_response
+        
+        # Execute with logging capture
+        with caplog.at_level(logging.WARNING):
+            response = orchestrator.execute(valid_request)
+        
+        # Verify fallback logging
+        assert any("Schema Intelligence failed" in record.message for record in caplog.records)
+        assert any("Falling back to full schema" in record.message for record in caplog.records)
+        assert any("tokens" in record.message for record in caplog.records)
+        
+        # Verify metadata includes fallback reason and token count
+        assert response.metadata["schema_intelligence_success"] is False
+        assert "schema_fallback_reason" in response.metadata
+        assert "schema_original_tokens" in response.metadata
+        assert response.metadata["schema_original_tokens"] > 0
+    
+    def test_fallback_logging_on_schema_intelligence_exception(self, orchestrator, valid_request, caplog):
+        """
+        Integration: Fallback logging includes token count and reason when Schema Intelligence raises exception.
+        """
+        import logging
+        
+        # Mock Schema Intelligence to raise exception
+        orchestrator.schema_intelligence_agent = Mock()
+        orchestrator.schema_intelligence_agent.execute.side_effect = RuntimeError("Schema parsing error")
+        
+        # Mock SQL agent
+        mock_sql_response = SQLGenerationResponse(
+            success=True,
+            sql="SELECT * FROM iso_tank LIMIT 100;",
+            validation_issues=[],
+            retry_count=0,
+            confidence=0.9
+        )
+        
+        orchestrator.sql_agent = Mock()
+        orchestrator.sql_agent.execute.return_value = mock_sql_response
+        
+        # Execute with logging capture
+        with caplog.at_level(logging.WARNING):
+            response = orchestrator.execute(valid_request)
+        
+        # Verify fallback logging
+        assert any("Schema Intelligence error" in record.message for record in caplog.records)
+        assert any("Falling back to full schema" in record.message for record in caplog.records)
+        assert any("tokens" in record.message for record in caplog.records)
+        
+        # Verify metadata includes fallback reason and token count
+        assert response.metadata["schema_intelligence_success"] is False
+        assert "schema_fallback_reason" in response.metadata
+        assert "Schema parsing error" in response.metadata["schema_fallback_reason"]
+        assert "schema_original_tokens" in response.metadata
+        assert response.metadata["schema_original_tokens"] > 0
 
 
 # Integration test with real SQL Generation agent (optional)

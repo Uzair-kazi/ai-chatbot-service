@@ -1,279 +1,274 @@
 """
-Tests for Cache Protocol
+Tests for Cache Implementations
 
-This module tests the cache protocol and no-op implementation.
-Full cache implementation will be tested in Phase 2.
+This module tests the InMemoryCache implementation including TTL expiration,
+LRU eviction, thread safety, and all cache operations.
 """
 
 import pytest
-from agents.cache import CacheProtocol, NoOpCache, default_cache
+import time
+import threading
+from agents.cache import InMemoryCache, NoOpCache, CacheProtocol
 
 
-# ============================================================================
-# CacheProtocol Tests
-# ============================================================================
-
-def test_cache_protocol_is_abstract():
-    """Test that CacheProtocol cannot be instantiated directly."""
-    with pytest.raises(TypeError):
-        CacheProtocol()
-
-
-def test_cache_protocol_requires_get_implementation():
-    """Test that CacheProtocol requires get() implementation."""
+class TestInMemoryCache:
+    """Test suite for InMemoryCache implementation."""
     
-    class IncompleteCacheGet(CacheProtocol):
-        def set(self, key: str, value, ttl=None):
-            pass
+    def test_implements_cache_protocol(self):
+        """Test that InMemoryCache implements CacheProtocol."""
+        cache = InMemoryCache()
+        assert isinstance(cache, CacheProtocol)
+    
+    def test_set_and_get_within_ttl(self):
+        """Happy path: Set and get value within TTL."""
+        cache = InMemoryCache(default_ttl=10)
         
-        def delete(self, key: str):
-            pass
+        cache.set("key1", "value1")
+        result = cache.get("key1")
         
-        def clear(self):
-            pass
+        assert result == "value1"
     
-    with pytest.raises(TypeError):
-        IncompleteCacheGet()
-
-
-def test_cache_protocol_requires_set_implementation():
-    """Test that CacheProtocol requires set() implementation."""
-    
-    class IncompleteCacheSet(CacheProtocol):
-        def get(self, key: str):
-            pass
+    def test_get_nonexistent_key(self):
+        """Happy path: Get returns None for non-existent key."""
+        cache = InMemoryCache()
         
-        def delete(self, key: str):
-            pass
+        result = cache.get("nonexistent")
         
-        def clear(self):
-            pass
+        assert result is None
     
-    with pytest.raises(TypeError):
-        IncompleteCacheSet()
-
-
-def test_cache_protocol_requires_delete_implementation():
-    """Test that CacheProtocol requires delete() implementation."""
-    
-    class IncompleteCacheDelete(CacheProtocol):
-        def get(self, key: str):
-            pass
+    def test_get_expired_entry(self):
+        """Edge case: Get returns None for expired entry."""
+        cache = InMemoryCache(default_ttl=1)  # 1 second TTL
         
-        def set(self, key: str, value, ttl=None):
-            pass
+        cache.set("key1", "value1")
+        time.sleep(1.1)  # Wait for expiry
+        result = cache.get("key1")
         
-        def clear(self):
-            pass
+        assert result is None
     
-    with pytest.raises(TypeError):
-        IncompleteCacheDelete()
-
-
-def test_cache_protocol_requires_clear_implementation():
-    """Test that CacheProtocol requires clear() implementation."""
-    
-    class IncompleteCacheClear(CacheProtocol):
-        def get(self, key: str):
-            pass
+    def test_expired_entry_removed_from_cache(self):
+        """Edge case: Expired entry is removed from internal storage."""
+        cache = InMemoryCache(default_ttl=1)
         
-        def set(self, key: str, value, ttl=None):
-            pass
+        cache.set("key1", "value1")
+        assert cache.size() == 1
         
-        def delete(self, key: str):
-            pass
+        time.sleep(1.1)  # Wait for expiry
+        cache.get("key1")  # Trigger expiry check
+        
+        assert cache.size() == 0
     
-    with pytest.raises(TypeError):
-        IncompleteCacheClear()
-
-
-# ============================================================================
-# NoOpCache Tests - Happy Path
-# ============================================================================
-
-def test_noop_cache_initialization():
-    """Test that NoOpCache can be instantiated."""
-    cache = NoOpCache()
+    def test_lru_eviction_at_max_capacity(self):
+        """Edge case: LRU eviction when cache reaches max_size."""
+        cache = InMemoryCache(max_size=3, default_ttl=60)
+        
+        # Fill cache to capacity
+        cache.set("key1", "value1")
+        time.sleep(0.01)  # Ensure different access times
+        cache.set("key2", "value2")
+        time.sleep(0.01)
+        cache.set("key3", "value3")
+        
+        # Access key2 to make it more recently used than key1
+        time.sleep(0.01)
+        cache.get("key2")
+        
+        # Add new key - should evict key1 (least recently used)
+        cache.set("key4", "value4")
+        
+        assert cache.get("key1") is None  # Evicted
+        assert cache.get("key2") == "value2"  # Still present
+        assert cache.get("key3") == "value3"  # Still present
+        assert cache.get("key4") == "value4"  # Newly added
     
-    assert cache is not None
-    assert isinstance(cache, CacheProtocol)
-
-
-def test_noop_cache_get_returns_none():
-    """Test that NoOpCache.get() always returns None."""
-    cache = NoOpCache()
+    def test_set_with_custom_ttl(self):
+        """Edge case: Set with custom TTL overrides default."""
+        cache = InMemoryCache(default_ttl=60)
+        
+        cache.set("key1", "value1", ttl=1)  # Custom 1-second TTL
+        time.sleep(1.1)
+        result = cache.get("key1")
+        
+        assert result is None
     
-    result = cache.get("test_key")
+    def test_update_existing_key(self):
+        """Happy path: Updating existing key doesn't trigger eviction."""
+        cache = InMemoryCache(max_size=2, default_ttl=60)
+        
+        cache.set("key1", "value1")
+        cache.set("key2", "value2")
+        
+        # Update key1 - should not evict key2
+        cache.set("key1", "updated_value1")
+        
+        assert cache.get("key1") == "updated_value1"
+        assert cache.get("key2") == "value2"
+        assert cache.size() == 2
     
-    assert result is None
-
-
-def test_noop_cache_set_does_nothing():
-    """Test that NoOpCache.set() does nothing."""
-    cache = NoOpCache()
+    def test_delete_existing_key(self):
+        """Integration: Delete removes entry and access time."""
+        cache = InMemoryCache()
+        
+        cache.set("key1", "value1")
+        assert cache.get("key1") == "value1"
+        
+        cache.delete("key1")
+        
+        assert cache.get("key1") is None
+        assert cache.size() == 0
     
-    # Should not raise exception
-    cache.set("test_key", "test_value")
+    def test_delete_nonexistent_key(self):
+        """Edge case: Delete nonexistent key doesn't raise error."""
+        cache = InMemoryCache()
+        
+        # Should not raise exception
+        cache.delete("nonexistent")
+        
+        assert cache.size() == 0
     
-    # Verify it doesn't actually cache
-    result = cache.get("test_key")
-    assert result is None
-
-
-def test_noop_cache_set_with_ttl_does_nothing():
-    """Test that NoOpCache.set() with TTL does nothing."""
-    cache = NoOpCache()
+    def test_clear_removes_all_entries(self):
+        """Integration: Clear removes all entries."""
+        cache = InMemoryCache()
+        
+        cache.set("key1", "value1")
+        cache.set("key2", "value2")
+        cache.set("key3", "value3")
+        
+        assert cache.size() == 3
+        
+        cache.clear()
+        
+        assert cache.size() == 0
+        assert cache.get("key1") is None
+        assert cache.get("key2") is None
+        assert cache.get("key3") is None
     
-    # Should not raise exception
-    cache.set("test_key", "test_value", ttl=60)
+    def test_thread_safety_concurrent_get_set(self):
+        """Integration: Cache operations are thread-safe."""
+        cache = InMemoryCache(max_size=100, default_ttl=60)
+        errors = []
+        
+        def worker(thread_id):
+            try:
+                for i in range(10):
+                    key = f"key_{thread_id}_{i}"
+                    cache.set(key, f"value_{thread_id}_{i}")
+                    result = cache.get(key)
+                    assert result == f"value_{thread_id}_{i}"
+            except Exception as e:
+                errors.append(e)
+        
+        # Run 5 threads concurrently
+        threads = []
+        for i in range(5):
+            t = threading.Thread(target=worker, args=(i,))
+            threads.append(t)
+            t.start()
+        
+        for t in threads:
+            t.join()
+        
+        # No errors should occur
+        assert len(errors) == 0
     
-    # Verify it doesn't actually cache
-    result = cache.get("test_key")
-    assert result is None
-
-
-def test_noop_cache_delete_does_nothing():
-    """Test that NoOpCache.delete() does nothing."""
-    cache = NoOpCache()
+    def test_cache_stores_different_types(self):
+        """Happy path: Cache can store different value types."""
+        cache = InMemoryCache()
+        
+        cache.set("string", "value")
+        cache.set("int", 42)
+        cache.set("list", [1, 2, 3])
+        cache.set("dict", {"key": "value"})
+        cache.set("none", None)
+        
+        assert cache.get("string") == "value"
+        assert cache.get("int") == 42
+        assert cache.get("list") == [1, 2, 3]
+        assert cache.get("dict") == {"key": "value"}
+        assert cache.get("none") is None  # Note: None is a valid cached value
     
-    # Should not raise exception
-    cache.delete("test_key")
+    def test_access_time_updated_on_get(self):
+        """Integration: Access time is updated on get for LRU."""
+        cache = InMemoryCache(max_size=2, default_ttl=60)
+        
+        cache.set("key1", "value1")
+        time.sleep(0.01)
+        cache.set("key2", "value2")
+        
+        # Access key1 to make it more recent
+        time.sleep(0.01)
+        cache.get("key1")
+        
+        # Add key3 - should evict key2 (least recently used)
+        cache.set("key3", "value3")
+        
+        assert cache.get("key1") == "value1"  # Still present
+        assert cache.get("key2") is None  # Evicted
+        assert cache.get("key3") == "value3"  # Newly added
 
 
-def test_noop_cache_clear_does_nothing():
-    """Test that NoOpCache.clear() does nothing."""
-    cache = NoOpCache()
+class TestNoOpCache:
+    """Test suite for NoOpCache implementation."""
     
-    # Should not raise exception
-    cache.clear()
-
-
-# ============================================================================
-# NoOpCache Tests - Edge Cases
-# ============================================================================
-
-def test_noop_cache_get_with_empty_key():
-    """Test that NoOpCache.get() handles empty key."""
-    cache = NoOpCache()
+    def test_implements_cache_protocol(self):
+        """Test that NoOpCache implements CacheProtocol."""
+        cache = NoOpCache()
+        assert isinstance(cache, CacheProtocol)
     
-    result = cache.get("")
+    def test_get_always_returns_none(self):
+        """Happy path: Get always returns None."""
+        cache = NoOpCache()
+        
+        cache.set("key1", "value1")
+        result = cache.get("key1")
+        
+        assert result is None
     
-    assert result is None
-
-
-def test_noop_cache_set_with_none_value():
-    """Test that NoOpCache.set() handles None value."""
-    cache = NoOpCache()
+    def test_set_does_nothing(self):
+        """Happy path: Set does nothing."""
+        cache = NoOpCache()
+        
+        # Should not raise exception
+        cache.set("key1", "value1")
+        cache.set("key2", "value2", ttl=10)
     
-    # Should not raise exception
-    cache.set("test_key", None)
-
-
-def test_noop_cache_set_with_complex_value():
-    """Test that NoOpCache.set() handles complex values."""
-    cache = NoOpCache()
+    def test_delete_does_nothing(self):
+        """Happy path: Delete does nothing."""
+        cache = NoOpCache()
+        
+        # Should not raise exception
+        cache.delete("key1")
     
-    complex_value = {
-        "nested": {
-            "data": [1, 2, 3],
-            "more": {"deep": "value"}
-        }
-    }
+    def test_clear_does_nothing(self):
+        """Happy path: Clear does nothing."""
+        cache = NoOpCache()
+        
+        # Should not raise exception
+        cache.clear()
+
+
+class TestCachePerformance:
+    """Performance tests for InMemoryCache."""
     
-    # Should not raise exception
-    cache.set("test_key", complex_value)
-    
-    # Verify it doesn't actually cache
-    result = cache.get("test_key")
-    assert result is None
-
-
-def test_noop_cache_multiple_operations():
-    """Test that NoOpCache handles multiple operations."""
-    cache = NoOpCache()
-    
-    # Multiple set operations
-    cache.set("key1", "value1")
-    cache.set("key2", "value2")
-    cache.set("key3", "value3")
-    
-    # All get operations should return None
-    assert cache.get("key1") is None
-    assert cache.get("key2") is None
-    assert cache.get("key3") is None
-    
-    # Delete and clear should not raise exceptions
-    cache.delete("key1")
-    cache.clear()
-
-
-# ============================================================================
-# Default Cache Tests
-# ============================================================================
-
-def test_default_cache_is_noop():
-    """Test that default_cache is a NoOpCache instance."""
-    assert isinstance(default_cache, NoOpCache)
-    assert isinstance(default_cache, CacheProtocol)
-
-
-def test_default_cache_get_returns_none():
-    """Test that default_cache.get() returns None."""
-    result = default_cache.get("test_key")
-    
-    assert result is None
-
-
-def test_default_cache_operations_work():
-    """Test that default_cache operations work without errors."""
-    # Should not raise exceptions
-    default_cache.set("test_key", "test_value")
-    default_cache.get("test_key")
-    default_cache.delete("test_key")
-    default_cache.clear()
-
-
-# ============================================================================
-# Integration Tests
-# ============================================================================
-
-def test_cache_protocol_interface_consistency():
-    """Test that NoOpCache implements all CacheProtocol methods."""
-    cache = NoOpCache()
-    
-    # Verify all methods exist and are callable
-    assert callable(cache.get)
-    assert callable(cache.set)
-    assert callable(cache.delete)
-    assert callable(cache.clear)
-
-
-def test_noop_cache_can_be_used_as_cache_protocol():
-    """Test that NoOpCache can be used where CacheProtocol is expected."""
-    
-    def use_cache(cache: CacheProtocol):
-        cache.set("key", "value")
-        return cache.get("key")
-    
-    cache = NoOpCache()
-    result = use_cache(cache)
-    
-    # NoOpCache should return None
-    assert result is None
-
-
-def test_multiple_noop_cache_instances_independent():
-    """Test that multiple NoOpCache instances are independent."""
-    cache1 = NoOpCache()
-    cache2 = NoOpCache()
-    
-    cache1.set("key", "value1")
-    cache2.set("key", "value2")
-    
-    # Both should return None (no actual caching)
-    assert cache1.get("key") is None
-    assert cache2.get("key") is None
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    def test_cache_operations_fast(self):
+        """Verification: All cache operations complete in <1ms."""
+        cache = InMemoryCache()
+        
+        # Test set performance
+        start = time.time()
+        cache.set("key1", "value1")
+        set_time = (time.time() - start) * 1000  # Convert to ms
+        
+        # Test get performance
+        start = time.time()
+        cache.get("key1")
+        get_time = (time.time() - start) * 1000
+        
+        # Test delete performance
+        start = time.time()
+        cache.delete("key1")
+        delete_time = (time.time() - start) * 1000
+        
+        assert set_time < 1.0, f"Set took {set_time}ms (expected <1ms)"
+        assert get_time < 1.0, f"Get took {get_time}ms (expected <1ms)"
+        assert delete_time < 1.0, f"Delete took {delete_time}ms (expected <1ms)"

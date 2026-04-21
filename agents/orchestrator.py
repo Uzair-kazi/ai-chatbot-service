@@ -1,14 +1,17 @@
 """
-Orchestrator Agent with Simple Routing
+Orchestrator Agent with Schema Intelligence Integration
 
 This agent analyzes incoming queries and routes them to appropriate specialized agents.
-In Phase 1, all queries are routed to the SQL Generation agent. The orchestrator provides
-an extensible framework for Phase 2-3 when multiple agents will be coordinated.
+In Phase 2, queries are routed through Schema Intelligence for schema pruning before
+SQL Generation. The orchestrator provides an extensible framework for Phase 3 when
+multiple agents will be coordinated.
 
-Routing logic (Phase 1):
-- All queries → SQL Generation agent
+Routing logic (Phase 2):
+- All queries → Schema Intelligence agent (schema pruning)
+- Pruned schema → SQL Generation agent
+- If Schema Intelligence fails, fall back to full schema
 - If SQL Generation returns low confidence (<0.6), escalate to human
-- Pass-through agent responses without transformation
+- Pass-through agent responses with schema pruning metadata
 
 Future phases will add:
 - Query complexity analysis
@@ -21,8 +24,10 @@ import time
 from typing import Optional
 from agents.base import BaseAgent, AgentExecutionError, AgentValidationError
 from agents.sql_generation import SQLGenerationAgent
+from agents.schema_intelligence import SchemaIntelligenceAgent
 from agents.models.agent_models import AgentRequest, AgentResponse
 from agents.models.query_models import SQLGenerationRequest, SQLGenerationResponse
+from agents.models.schema_models import SchemaIntelligenceRequest, SchemaIntelligenceResponse
 from config.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -32,10 +37,11 @@ class OrchestratorAgent(BaseAgent):
     """
     Orchestrator agent that routes queries to specialized agents.
     
-    Phase 1 implementation:
-    - Simple routing: all queries → SQL Generation agent
+    Phase 2 implementation:
+    - Schema Intelligence: Prune schema to reduce token usage
+    - SQL Generation: Generate SQL with pruned schema
+    - Fallback: Use full schema if Schema Intelligence fails
     - Escalation: low confidence responses → human review
-    - Pass-through: agent responses returned without transformation
     
     Future phases will add complexity analysis, multi-agent coordination,
     and conflict resolution.
@@ -43,6 +49,7 @@ class OrchestratorAgent(BaseAgent):
     Attributes:
         name: Agent name
         logger: Logger instance
+        schema_intelligence_agent: Schema Intelligence agent instance
         sql_agent: SQL Generation agent instance
         confidence_threshold: Minimum confidence for automatic responses (0.6)
     """
@@ -55,20 +62,22 @@ class OrchestratorAgent(BaseAgent):
         super().__init__(name="OrchestratorAgent")
         
         # Initialize specialized agents
+        self.schema_intelligence_agent = SchemaIntelligenceAgent()
         self.sql_agent = SQLGenerationAgent()
         
-        self.logger.info("Orchestrator initialized with SQL Generation agent")
+        self.logger.info("Orchestrator initialized with Schema Intelligence and SQL Generation agents")
     
     def execute(self, request: AgentRequest) -> AgentResponse:
         """
         Execute orchestration: analyze query and route to appropriate agent(s).
         
-        Phase 1 routing logic:
+        Phase 2 routing logic:
         1. Validate request
-        2. Route to SQL Generation agent
-        3. Check confidence score
-        4. Escalate if confidence < threshold
-        5. Return agent response
+        2. Route to Schema Intelligence agent for schema pruning
+        3. Route to SQL Generation agent with pruned schema
+        4. Check confidence score
+        5. Escalate if confidence < threshold
+        6. Return agent response
         
         Args:
             request: AgentRequest with question and schema
@@ -88,8 +97,8 @@ class OrchestratorAgent(BaseAgent):
         self.logger.info(f"Orchestrating request: {request.question}")
         
         try:
-            # Phase 1: Simple routing - all queries go to SQL Generation agent
-            agent_response = self._route_to_sql_generation(request)
+            # Phase 2: Route through Schema Intelligence → SQL Generation
+            agent_response = self._route_with_schema_intelligence(request)
             
             # Check if escalation is needed
             if agent_response.success and agent_response.confidence < self.CONFIDENCE_THRESHOLD:
@@ -108,7 +117,7 @@ class OrchestratorAgent(BaseAgent):
                 self._log_execution_time("Orchestration (escalated)", start_time)
                 return escalation_response
             
-            # Return agent response (pass-through in Phase 1)
+            # Return agent response
             self._log_execution_time("Orchestration", start_time)
             
             self.logger.info(
@@ -120,7 +129,7 @@ class OrchestratorAgent(BaseAgent):
             return agent_response
             
         except AgentValidationError as e:
-            # Validation error from SQL agent
+            # Validation error from agents
             self.logger.error(f"Agent validation error: {e}")
             self._log_execution_time("Orchestration (validation error)", start_time)
             
@@ -135,7 +144,7 @@ class OrchestratorAgent(BaseAgent):
             )
             
         except AgentExecutionError as e:
-            # Execution error from SQL agent
+            # Execution error from agents
             self.logger.error(f"Agent execution error: {e}")
             self._log_execution_time("Orchestration (execution error)", start_time)
             
@@ -163,6 +172,144 @@ class OrchestratorAgent(BaseAgent):
                     "error_type": "unexpected_error"
                 }
             )
+    
+    def _route_with_schema_intelligence(self, request: AgentRequest) -> AgentResponse:
+        """
+        Route request through Schema Intelligence → SQL Generation pipeline.
+        
+        Phase 2 routing:
+        1. Call Schema Intelligence to prune schema
+        2. Pass pruned schema to SQL Generation
+        3. Fall back to full schema if Schema Intelligence fails
+        
+        Args:
+            request: AgentRequest with question and schema
+            
+        Returns:
+            AgentResponse from SQL Generation agent
+        """
+        self.logger.info("Routing through Schema Intelligence → SQL Generation pipeline")
+        
+        # Step 1: Call Schema Intelligence for schema pruning
+        pruned_schema = request.db_schema  # Default to full schema
+        schema_metadata = {}
+        
+        try:
+            schema_request = SchemaIntelligenceRequest(
+                question=request.question,
+                full_schema=request.db_schema
+            )
+            
+            schema_response: SchemaIntelligenceResponse = self.schema_intelligence_agent.execute(schema_request)
+            
+            if schema_response.success:
+                pruned_schema = schema_response.pruned_schema
+                schema_metadata = {
+                    "schema_intelligence_success": True,
+                    "schema_cache_hit": schema_response.metadata.get("cache_hit", False),
+                    "schema_token_reduction": schema_response.metadata.get("token_reduction", 0),
+                    "schema_original_tokens": schema_response.metadata.get("original_token_count", 0),
+                    "schema_pruned_tokens": schema_response.metadata.get("pruned_token_count", 0),
+                    "schema_selected_tables": len(schema_response.selected_tables),
+                    "schema_confidence": schema_response.confidence
+                }
+                
+                self.logger.info(
+                    f"Schema Intelligence succeeded: "
+                    f"{len(schema_response.selected_tables)} tables selected, "
+                    f"{schema_response.metadata.get('token_reduction', 0):.1f}% token reduction"
+                )
+            else:
+                # Schema Intelligence failed - fall back to full schema
+                original_token_count = len(request.db_schema) // 4  # Estimate: 1 token ≈ 4 characters
+                self.logger.warning(
+                    f"Schema Intelligence failed: {schema_response.error}. "
+                    f"Falling back to full schema (~{original_token_count} tokens).",
+                    extra={
+                        "fallback_reason": schema_response.error,
+                        "original_tokens": original_token_count,
+                        "schema_intelligence_success": False
+                    }
+                )
+                schema_metadata = {
+                    "schema_intelligence_success": False,
+                    "schema_fallback_reason": schema_response.error,
+                    "schema_original_tokens": original_token_count
+                }
+                
+        except Exception as e:
+            # Schema Intelligence error - fall back to full schema
+            original_token_count = len(request.db_schema) // 4  # Estimate: 1 token ≈ 4 characters
+            self.logger.warning(
+                f"Schema Intelligence error: {e}. "
+                f"Falling back to full schema (~{original_token_count} tokens).",
+                extra={
+                    "fallback_reason": str(e),
+                    "original_tokens": original_token_count,
+                    "schema_intelligence_success": False
+                }
+            )
+            schema_metadata = {
+                "schema_intelligence_success": False,
+                "schema_fallback_reason": str(e),
+                "schema_original_tokens": original_token_count
+            }
+        
+        # Step 2: Call SQL Generation with pruned (or full) schema
+        agent_response = self._route_to_sql_generation_with_schema(request, pruned_schema)
+        
+        # Add schema metadata to response
+        agent_response.metadata.update(schema_metadata)
+        
+        return agent_response
+    
+    def _route_to_sql_generation_with_schema(
+        self,
+        request: AgentRequest,
+        schema: str
+    ) -> AgentResponse:
+        """
+        Route request to SQL Generation agent with specified schema.
+        
+        Args:
+            request: AgentRequest with question
+            schema: Schema to use (pruned or full)
+            
+        Returns:
+            AgentResponse from SQL Generation agent
+        """
+        self.logger.info("Routing to SQL Generation agent")
+        
+        # Convert AgentRequest to SQLGenerationRequest
+        sql_request = SQLGenerationRequest(
+            question=request.question,
+            db_schema=schema,  # Use provided schema (pruned or full)
+            context=request.context,
+            max_retries=2,  # Default retry count
+            temperature=0.1  # Low temperature for deterministic SQL
+        )
+        
+        # Execute SQL Generation agent
+        sql_response: SQLGenerationResponse = self.sql_agent.execute(sql_request)
+        
+        # Convert SQLGenerationResponse to AgentResponse
+        agent_response = AgentResponse(
+            success=sql_response.success,
+            data={
+                "sql": sql_response.sql,
+                "validation_issues": sql_response.validation_issues,
+                "retry_count": sql_response.retry_count
+            } if sql_response.success else None,
+            error=sql_response.error,
+            confidence=sql_response.confidence,
+            metadata={
+                **sql_response.metadata,
+                "agent": "SQLGenerationAgent",
+                "routing_strategy": "schema_intelligence"  # Phase 2 strategy
+            }
+        )
+        
+        return agent_response
     
     def _route_to_sql_generation(self, request: AgentRequest) -> AgentResponse:
         """
