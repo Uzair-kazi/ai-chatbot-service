@@ -2,7 +2,7 @@
 FastAPI Application Entry Point
 
 This module creates and configures the FastAPI application for the Admin AI Chatbot.
-It sets up middleware, routers, and event handlers for the production REST API.
+It sets up middleware, routers, and lifespan handlers for the production REST API.
 
 Environment Variables:
 - PORT: Server port (default: 8000)
@@ -13,6 +13,8 @@ Environment Variables:
 """
 
 import os
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -43,7 +45,26 @@ else:
 # Initialize logger
 logger = get_logger(__name__)
 
-# Create FastAPI application
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator:
+    """
+    Lifespan context manager for application startup and shutdown.
+    
+    Replaces deprecated @app.on_event decorators with modern lifespan pattern.
+    """
+    # Startup
+    logger.info(f"Starting Admin AI Chatbot API v{SERVICE_VERSION}")
+    logger.info(f"Environment: {ENVIRONMENT}")
+    logger.info(f"CORS Origins: {cors_origins}")
+    logger.info(f"Server: {HOST}:{PORT}")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Admin AI Chatbot API")
+
+# Create FastAPI application with lifespan
 app = FastAPI(
     title="Admin AI Chatbot API",
     description="""
@@ -98,6 +119,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    lifespan=lifespan,
     openapi_tags=[
         {
             "name": "Questions",
@@ -131,21 +153,6 @@ app.add_exception_handler(Exception, generic_exception_handler)
 
 # Include API router with /v1 prefix
 app.include_router(api_router, prefix="/v1")
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Log application startup."""
-    logger.info(f"Starting Admin AI Chatbot API v{SERVICE_VERSION}")
-    logger.info(f"Environment: {ENVIRONMENT}")
-    logger.info(f"CORS Origins: {cors_origins}")
-    logger.info(f"Server: {HOST}:{PORT}")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Log application shutdown."""
-    logger.info("Shutting down Admin AI Chatbot API")
 
 
 # Root endpoint for basic connectivity check
