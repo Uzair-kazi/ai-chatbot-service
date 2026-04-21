@@ -311,3 +311,96 @@ class MetricsResponse(BaseModel):
             ]
         }
     }
+
+
+
+class LoginRequest(BaseModel):
+    """Request model for user login."""
+    
+    email: str = Field(
+        ...,
+        description="User email address",
+        examples=["admin@example.com"]
+    )
+    password: str = Field(
+        ...,
+        min_length=1,
+        description="User password",
+        examples=["secure_password_123"]
+    )
+    
+    @field_validator('email')
+    @classmethod
+    def email_must_be_valid_format(cls, v: str) -> str:
+        """Validate email format."""
+        if not v or not v.strip():
+            raise ValueError('Email cannot be empty')
+        
+        # Basic email format validation
+        email = v.strip()
+        if '@' not in email or '.' not in email.split('@')[-1]:
+            raise ValueError('Invalid email format')
+        
+        return email
+    
+    @field_validator('password')
+    @classmethod
+    def password_must_not_be_empty(cls, v: str) -> str:
+        """Validate password is not empty."""
+        if not v:
+            raise ValueError('Password cannot be empty')
+        return v
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "email": "admin@example.com",
+                    "password": "secure_password_123"
+                }
+            ]
+        }
+    }
+
+
+class UserInfo(BaseModel):
+    """User information included in login response."""
+    
+    id: str = Field(..., description="User ID")
+    email: str = Field(..., description="User email")
+    name: str = Field(..., description="User display name")
+    role: str = Field(..., description="User role name")
+
+
+class LoginResponse(BaseModel):
+    """Response model for successful login."""
+    
+    token: str = Field(
+        ...,
+        description="JWT authentication token"
+    )
+    user: UserInfo = Field(
+        ...,
+        description="User information"
+    )
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        description="Login timestamp in ISO 8601 format"
+    )
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    "user": {
+                        "id": "123e4567-e89b-12d3-a456-426614174000",
+                        "email": "admin@example.com",
+                        "name": "Admin User",
+                        "role": "Admin"
+                    },
+                    "timestamp": "2026-04-21T10:30:00Z"
+                }
+            ]
+        }
+    }
