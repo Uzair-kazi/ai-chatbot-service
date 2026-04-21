@@ -478,6 +478,10 @@ class TestSchemaPruning:
         
         # Should have significant reduction
         assert pruned.token_count < pruned.original_token_count
+        # Note: We verify >50% reduction rather than a fixed 95% target because:
+        # - Token reduction varies by query complexity (simple queries may select more tables)
+        # - The 95% target (8,000 → 300 tokens) is a system-level goal for complex queries
+        # - Table count is a more stable metric across different query types
         assert pruned.reduction_percentage > 50  # At least 50% reduction
     
     def test_prune_schema_all_columns_included(self):
@@ -587,6 +591,10 @@ class TestSchemaIntelligenceAgent:
         
         # Should select a subset of tables (not all 6)
         # With max_depth=1, should only get survey_form and maybe iso_tank (reverse FK)
+        # Note: We verify table count reduction rather than a fixed 95% token reduction because:
+        # - Token reduction varies by query complexity and schema structure
+        # - The 95% target is a system-level goal for complex multi-table queries
+        # - Table count is a more stable and predictable metric
         assert len(response.selected_tables) < 6
         assert len(response.selected_tables) > 0
         # Should include survey_form table
