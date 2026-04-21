@@ -1,0 +1,88 @@
+# Security Policies Configuration
+#
+# This file defines security rules for the Security & Governance Agent.
+# Security team can update this file without code changes.
+#
+# Structure:
+#   pii_columns: List of columns containing Personally Identifiable Information
+#   blocked_operations: List of dangerous SQL operations to block
+#   role_permissions: RBAC rules for different user roles
+
+# PII (Personally Identifiable Information) columns
+# These columns are restricted based on user role
+pii_columns:
+  - vehicle_in.driver_mobile_number
+  - vehicle_in.license_number
+  - visitor.mobile_number
+  - SurakshaClientEmail.email
+  - vehicle_in.driver_name
+  - visitor.name
+  - visitor.email
+
+# Dangerous SQL operations that are always blocked
+# These operations can modify or delete data
+blocked_operations:
+  - DROP
+  - DELETE
+  - UPDATE
+  - INSERT
+  - ALTER
+  - TRUNCATE
+  - GRANT
+  - REVOKE
+  - CREATE
+  - REPLACE
+  - EXEC
+  - EXECUTE
+
+# Role-based access control (RBAC) permissions
+role_permissions:
+  # Admin role - full access to all tables and columns
+  admin:
+    tables: all  # Special value "all" means access to all tables
+    columns: all  # Special value "all" means access to all columns
+    description: "Full access to all tables and columns including PII"
+  
+  # Analyst role - access to most tables but PII columns are restricted
+  analyst:
+    tables:
+      - iso_tank
+      - service_tank
+      - vehicle_in
+      - vehicle_out
+      - survey_form
+      - SurakshaClientEmail
+      - visitor
+    excluded_columns:
+      - vehicle_in.driver_mobile_number
+      - vehicle_in.license_number
+      - visitor.mobile_number
+      - SurakshaClientEmail.email
+      - visitor.email
+    description: "Access to operational tables but PII columns are restricted"
+  
+  # Viewer role - read-only access to limited tables and columns
+  viewer:
+    tables:
+      - iso_tank
+      - service_tank
+    allowed_columns:
+      iso_tank:
+        - tank_number
+        - iso_tank_status
+        - created_at
+        - updated_at
+      service_tank:
+        - tank_number
+        - service_tank_status
+        - created_at
+        - updated_at
+    description: "Limited read-only access to tank information only"
+
+# Risk scoring weights
+# Used to calculate overall risk score for queries
+risk_weights:
+  pii_access: 0.5  # Accessing PII columns adds 0.5 to risk score
+  cross_domain_join: 0.2  # Joining across multiple domains adds 0.2
+  large_result_set: 0.1  # Queries without LIMIT add 0.1
+  dangerous_operation: 1.0  # Dangerous operations set risk to 1.0 (automatic block)

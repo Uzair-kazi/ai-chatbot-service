@@ -1,0 +1,60 @@
+# Business Glossary Configuration
+#
+# This file maps business terminology to database concepts for the Query Refinement Agent.
+# Domain experts can update this file without code changes.
+#
+# Structure:
+#   temporal_terms: Maps time-related phrases to SQL date functions
+#   entity_mappings: Maps business entities to database tables/columns
+
+# Temporal terms for date/time resolution
+temporal_terms:
+  # Current period terms
+  this_month: "WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE)"
+  this_week: "WHERE created_at >= DATE_TRUNC('week', CURRENT_DATE)"
+  this_year: "WHERE created_at >= DATE_TRUNC('year', CURRENT_DATE)"
+  today: "WHERE DATE(created_at) = CURRENT_DATE"
+  
+  # Past period terms
+  last_month: "WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month') AND created_at < DATE_TRUNC('month', CURRENT_DATE)"
+  last_quarter: "WHERE created_at >= DATE_TRUNC('quarter', CURRENT_DATE - INTERVAL '3 months') AND created_at < DATE_TRUNC('quarter', CURRENT_DATE)"
+  last_week: "WHERE created_at >= DATE_TRUNC('week', CURRENT_DATE - INTERVAL '1 week') AND created_at < DATE_TRUNC('week', CURRENT_DATE)"
+  yesterday: "WHERE DATE(created_at) = CURRENT_DATE - INTERVAL '1 day'"
+  
+  # Relative period terms
+  last_7_days: "WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'"
+  last_30_days: "WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'"
+  last_90_days: "WHERE created_at >= CURRENT_DATE - INTERVAL '90 days'"
+
+# Entity mappings for business terminology
+entity_mappings:
+  # Client-related terms
+  clients: "vehicle_in.croyance_client_name"
+  client_name: "vehicle_in.croyance_client_name"
+  customer: "vehicle_in.croyance_client_name"
+  customers: "vehicle_in.croyance_client_name"
+  
+  # Tank-related terms
+  tanks: "iso_tank table (for ISO tanks) or service_tank table (for service tanks)"
+  iso_tanks: "iso_tank table"
+  service_tanks: "service_tank table"
+  tank_number: "iso_tank.tank_number or service_tank.tank_number"
+  tank_status: "iso_tank.iso_tank_status or service_tank.service_tank_status"
+  
+  # Vehicle-related terms
+  vehicle_in: "vehicle_in table (for incoming vehicles)"
+  vehicle_out: "vehicle_out table (for outgoing vehicles)"
+  vehicle_in_date: "vehicle_in.in_date_time"
+  vehicle_out_date: "vehicle_out.out_date_time"
+  
+  # Survey-related terms
+  survey_status: "survey_form_id IS NULL means not surveyed, survey_form_id IS NOT NULL means surveyed"
+  surveyed: "survey_form_id IS NOT NULL"
+  not_surveyed: "survey_form_id IS NULL"
+  unsurveyed: "survey_form_id IS NULL"
+  
+  # Status-related terms
+  in_status: "iso_tank_status = 'IN' or service_tank_status = 'IN'"
+  out_status: "iso_tank_status = 'OUT' or service_tank_status = 'OUT'"
+  active: "status = 'ACTIVE' or iso_tank_status = 'IN'"
+  inactive: "status = 'INACTIVE' or iso_tank_status = 'OUT'"
