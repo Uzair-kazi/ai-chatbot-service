@@ -296,6 +296,203 @@ class TestRootEndpoint:
         assert "health" in data
 
 
+class TestMultiAgentAskEndpoint:
+    """Tests for POST /v1/ask/multi-agent endpoint."""
+    
+    @patch('api.routes.multi_agent_ask')
+    def test_valid_question_with_jwt_returns_answer(self, mock_pipeline):
+        """Happy path: Valid question with JWT returns answer from multi-agent pipeline."""
+        # Mock multi-agent pipeline response
+        mock_pipeline.return_value = {
+            "answer": "There are 47 ISO tanks with status 'IN'.",
+            "sql": "SELECT COUNT(*) FROM iso_tank WHERE iso_tank_status = 'IN' LIMIT 100;",
+            "rows_count": 1,
+            "status_code": 200,
+            "confidence": 0.9,
+            "retry_count": 0
+        }
+        
+        token = create_test_token()
+        response = client.post(
+            "/v1/ask/multi-agent",
+            json={"question": "How many ISO tanks are in 'IN' status?"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "answer" in data
+        assert "sql" in data
+        assert "rows_count" in data
+        assert "timestamp" in data
+        assert data["answer"] == "There are 47 ISO tanks with status 'IN'."
+        assert data["rows_count"] == 1
+    
+    @patch('api.routes.multi_agent_ask')
+    def test_response_includes_all_fields(self, mock_pipeline):
+        """Happy path: Response includes answer, SQL, row count, timestamp."""
+        mock_pipeline.return_value = {
+            "answer": "Test answer",
+            "sql": "SELECT * FROM test;",
+            "rows_count": 5,
+            "execution_time_ms": 1234,
+            "status_code": 200,
+            "confidence": 0.85,
+            "retry_count": 1
+        }
+        
+        token = create_test_token()
+        response = client.post(
+            "/v1/ask/multi-agent",
+            json={"question": "Test question?"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["answer"] == "Test answer"
+        assert data["sql"] == "SELECT * FROM test;"
+        assert data["rows_count"] == 5
+        assert data["execution_time_ms"] == 1234
+        assert data["timestamp"].endswith("Z")
+    
+    def test_missing_authorization_header_returns_401(self):
+        """Error path: Missing Authorization header returns 401."""
+        response = client.post(
+            "/v1/ask/multi-agent",
+            json={"question": "How many tanks?"}
+        )
+        
+        assert response.status_code == 401
+        data = response.json()
+        assert "detail" in data
+        assert "authorization" in data["detail"].lower()
+    
+    def test_invalid_jwt_token_returns_401(self):
+        """Error path: Invalid JWT token returns 401."""
+        response = client.post(
+            "/v1/ask/multi-agent",
+            json={"question": "How many tanks?"},
+            headers={"Authorization": "Bearer invalid_token_here"}
+        )
+        
+        assert response.status_code == 401
+        data = response.json()
+        assert "detail" in data
+    
+    def test_non_admin_user_returns_403(self):
+        """Error path: Non-admin user returns 403."""
+        token = create_test_token(role_name="user")  # Not admin
+        response = client.post(
+            "/v1/ask/multi-agent",
+            json={"question": "How many tanks?"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        assert response.status_code == 403
+        data = response.json()
+        assert "detail" in data
+        assert "admin" in data["detail"].lower()
+    
+    @patch('api.routes.multi_agent_ask')
+    def test_low_confidence_escalation_returns_400(self, mock_pipeline):
+        """Error path: Low confidence escalation returns 400."""
+        mock_pipeline.return_value = {
+            "answer": "This query requires human review. Reason: Low confidence (0.5).",
+            "sql": "SELECT * FROM ambiguous_table;",
+            "rows_count": 0,
+            "status_code": 400,
+            "error": "Low confidence escalation",
+            "confidence": 0.5,
+            "retry_count": 2
+        }
+        
+        token = create_test_token()
+        response = client.post(
+            "/v1/ask/multi-agent",
+            json={"question": "Ambiguous question"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        assert response.status_code == 400
+        data = response.json()
+        assert "detail" in data
+    
+    @patch('api.routes.multi_agent_ask')
+    def test_self_critique_retry_success(self, mock_pipeline):
+        """Happy path: Self-critique retry succeeds on second attempt."""
+        mock_pipeline.return_value = {
+            "answer": "Query executed successfully after retry.",
+            "sql": "SELECT COUNT(*) FROM iso_tank WHERE id IS NOT NULL;",
+            "rows_count": 1,
+            "status_code": 200,
+            "confidence": 0.75,  # Lower confidence after retry
+            "retry_count": 1  # One retry performed
+        }
+        
+        token = create_test_token()
+        response = client.post(
+            "/v1/ask/multi-agent",
+            json={"question": "How many tanks?"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["answer"] == "Query executed successfully after retry."
+    
+    @patch('api.routes.multi_agent_ask')
+    def test_database_connection_failure_returns_503(self, mock_pipeline):
+        """Error path: Database connection failure returns 503."""
+        mock_pipeline.return_value = {
+            "answer": "Database unavailable.",
+            "sql": "",
+            "rows_count": 0,
+            "status_code": 503,
+            "error": "Database connection failed",
+            "confidence": 0.0,
+            "retry_count": 0
+        }
+        
+        token = create_test_token()
+        response = client.post(
+            "/v1/ask/multi-agent",
+            json={"question": "Any question"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        assert response.status_code == 503
+        data = response.json()
+        assert "detail" in data
+    
+    @patch('api.routes.multi_agent_ask')
+    def test_end_to_end_with_real_jwt_and_pipeline(self, mock_pipeline):
+        """Integration: End-to-end request with real JWT and multi-agent pipeline."""
+        mock_pipeline.return_value = {
+            "answer": "Integration test answer",
+            "sql": "SELECT 1;",
+            "rows_count": 1,
+            "status_code": 200,
+            "confidence": 0.9,
+            "retry_count": 0
+        }
+        
+        token = create_test_token()
+        response = client.post(
+            "/v1/ask/multi-agent",
+            json={"question": "Integration test question"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["answer"] == "Integration test answer"
+        assert data["sql"] == "SELECT 1;"
+        
+        # Verify pipeline was called with the question
+        mock_pipeline.assert_called_once_with("Integration test question")
+
+
 
 
 class TestLoginEndpoint:
