@@ -342,3 +342,91 @@ def test_agent_models_dict_conversion():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ============================================================================
+# OrchestratorResponse Tests
+# ============================================================================
+
+def test_orchestrator_response_with_routing_info():
+    """Test OrchestratorResponse with routing metadata."""
+    from agents.models.agent_models import OrchestratorResponse
+    
+    response = OrchestratorResponse(
+        success=True,
+        data={"sql": "SELECT * FROM iso_tank LIMIT 100;"},
+        confidence=0.9,
+        routed_to="SQLGenerationAgent",
+        routing_strategy="simple",
+        escalated=False,
+        metadata={"execution_time": 1.23}
+    )
+    
+    assert response.success is True
+    assert response.confidence == 0.9
+    assert response.routed_to == "SQLGenerationAgent"
+    assert response.routing_strategy == "simple"
+    assert response.escalated is False
+    assert response.metadata["execution_time"] == 1.23
+
+
+def test_orchestrator_response_with_escalation():
+    """Test OrchestratorResponse with escalation flag."""
+    from agents.models.agent_models import OrchestratorResponse
+    
+    response = OrchestratorResponse(
+        success=False,
+        error="Low confidence - requires human review",
+        confidence=0.45,
+        routed_to="SQLGenerationAgent",
+        routing_strategy="simple",
+        escalated=True,
+        metadata={"escalation_reason": "Low confidence (0.45)"}
+    )
+    
+    assert response.success is False
+    assert response.escalated is True
+    assert response.confidence == 0.45
+    assert "Low confidence" in response.error
+    assert response.metadata["escalation_reason"] == "Low confidence (0.45)"
+
+
+def test_orchestrator_response_default_values():
+    """Test OrchestratorResponse default values."""
+    from agents.models.agent_models import OrchestratorResponse
+    
+    response = OrchestratorResponse(
+        success=True,
+        data={"result": "test"}
+    )
+    
+    assert response.routed_to is None
+    assert response.routing_strategy == "simple"
+    assert response.escalated is False
+    assert response.confidence == 1.0
+
+
+def test_orchestrator_response_json_serialization():
+    """Test OrchestratorResponse JSON serialization."""
+    from agents.models.agent_models import OrchestratorResponse
+    
+    response = OrchestratorResponse(
+        success=True,
+        data={"sql": "SELECT * FROM iso_tank LIMIT 100;"},
+        confidence=0.9,
+        routed_to="SQLGenerationAgent",
+        routing_strategy="simple",
+        escalated=False
+    )
+    
+    # Serialize to JSON
+    json_str = response.model_dump_json()
+    assert "SQLGenerationAgent" in json_str
+    assert "simple" in json_str
+    
+    # Deserialize from JSON
+    response_dict = response.model_dump()
+    restored = OrchestratorResponse(**response_dict)
+    assert restored.routed_to == "SQLGenerationAgent"
+    assert restored.routing_strategy == "simple"
+    assert restored.escalated is False

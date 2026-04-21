@@ -118,3 +118,45 @@ class AgentResponse(BaseModel):
         if not 0.0 <= v <= 1.0:
             raise ValueError("Confidence must be between 0.0 and 1.0")
         return v
+
+
+class OrchestratorResponse(AgentResponse):
+    """
+    Response model for Orchestrator agent.
+    
+    Extends AgentResponse with orchestration-specific metadata like routing
+    strategy and agent selection.
+    
+    Attributes:
+        success: Whether orchestration succeeded (inherited)
+        data: Result data (inherited)
+        error: Error message (inherited)
+        confidence: Confidence score (inherited)
+        metadata: Metadata (inherited)
+        routed_to: Name of agent(s) the request was routed to
+        routing_strategy: Strategy used for routing (e.g., "simple", "complex", "multi-agent")
+        escalated: Whether the request was escalated to human review
+        
+    Example:
+        response = OrchestratorResponse(
+            success=True,
+            data={"sql": "SELECT * FROM iso_tank LIMIT 100;"},
+            confidence=0.9,
+            routed_to="SQLGenerationAgent",
+            routing_strategy="simple",
+            escalated=False
+        )
+    """
+    
+    routed_to: Optional[str] = Field(
+        default=None,
+        description="Name of agent(s) the request was routed to"
+    )
+    routing_strategy: str = Field(
+        default="simple",
+        description="Strategy used for routing"
+    )
+    escalated: bool = Field(
+        default=False,
+        description="Whether the request was escalated to human review"
+    )
