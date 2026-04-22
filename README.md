@@ -119,6 +119,10 @@ ai-service-croyance/
 │   ├── __init__.py                 # Config package
 │   ├── ai_provider.py              # AI client initialization
 │   └── logging_config.py           # Centralized logging setup
+├── docs/
+│   ├── solutions/                  # documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type)
+│   ├── brainstorms/                # requirements and brainstorming documents
+│   └── plans/                      # implementation plans
 ├── services/
 │   ├── __init__.py
 │   ├── schema.py                   # Database schema introspection
