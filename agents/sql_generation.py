@@ -22,7 +22,7 @@ single-shot generation.
 
 import re
 import time
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 from agents.base import BaseAgent, AgentExecutionError
 from agents.mcp_client import MCPClient
 from agents.models.query_models import SQLGenerationRequest, SQLGenerationResponse
@@ -386,7 +386,7 @@ Please fix these issues in your new SQL query. Pay special attention to:
         # Fallback to built-in validation
         return self._validate_sql_fallback(sql, schema)
     
-    def _validate_sql_with_mcp(self, sql: str, schema: str) -> Tuple[bool, List[str]]:
+    def _validate_sql_with_mcp(self, sql: str, schema: str) -> Optional[Tuple[bool, List[str]]]:
         """
         Validate SQL using MCP client for enhanced accuracy.
         

@@ -12,17 +12,48 @@ Key features:
 - Automatic reconnection on failures
 - Structured error responses
 - Request ID tracking for debugging
+
+MCP Server Setup (Optional):
+To use MCP mode instead of fallback mode, you need to run a local MCP PostgreSQL server.
+
+1. Install MCP Python SDK:
+   pip install "mcp[cli]"
+
+2. Create an MCP server that exposes PostgreSQL operations:
+   - Use mcp.server.fastmcp to create a server
+   - Expose tools for schema introspection, query validation, and execution
+   - Run with HTTP transport on localhost:8080
+
+3. Configure environment variables:
+   MCP_SERVER_URL="http://localhost:8080/mcp"
+   MCP_DATABASE_NAME="tank_depot"
+
+4. The client will automatically connect to MCP server if configured,
+   otherwise it operates in fallback mode (direct database access).
 """
 
 import os
 import time
 import uuid
+import asyncio
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
 from enum import Enum
 from config.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# MCP SDK imports - only imported if MCP is configured
+try:
+    from mcp import ClientSession
+    from mcp.client.sse import sse_client
+    MCP_AVAILABLE = True
+except ImportError:
+    MCP_AVAILABLE = False
+    logger.warning(
+        "MCP SDK not installed. Install with: pip install 'mcp[cli]'. "
+        "Operating in fallback mode only."
+    )
 
 
 class MCPErrorType(Enum):
@@ -130,7 +161,8 @@ class MCPClient:
         
         # Connection state
         self._connected = False
-        self._connection = None
+        self._session = None
+        self._event_loop = None
         
         # Initialize connection
         self._connect()
@@ -142,6 +174,14 @@ class MCPClient:
         Raises:
             MCPConnectionError: If connection fails after retries
         """
+        if not MCP_AVAILABLE:
+            self.logger.warning(
+                "MCP SDK not available - operating in fallback mode. "
+                "Install with: pip install 'mcp[cli]'"
+            )
+            self._connected = False
+            return
+        
         if not self.server_url:
             self.logger.warning(
                 "MCP_SERVER_URL not configured - MCP client will operate in fallback mode"
@@ -163,37 +203,85 @@ class MCPClient:
                     f"(attempt {attempt}/{self.max_retries})"
                 )
                 
-                # TODO: Replace with actual MCP SDK connection
-                # For now, simulate connection
-                # from mcp import Client
-                # self._connection = Client(self.server_url, self.database_name)
+                # Create event loop for async operations
+                try:
+                    self._event_loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    self._event_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(self._event_loop)
+                
+                # Test connection with a simple async call
+                async def test_connection():
+                    async with sse_client(self.server_url) as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            return session
+                
+                # Run connection test
+                self._event_loop.run_until_complete(
+                    asyncio.wait_for(test_connection(), timeout=10)
+                )
                 
                 self._connected = True
                 self.logger.info("Successfully connected to MCP server")
                 return
                 
+            except asyncio.TimeoutError:
+                self.logger.warning(
+                    f"MCP connection attempt {attempt} timed out"
+                )
             except Exception as e:
                 self.logger.warning(
                     f"MCP connection attempt {attempt} failed: {e}"
                 )
                 
-                if attempt == self.max_retries:
-                    self.logger.error(
-                        f"Failed to connect to MCP server after {self.max_retries} attempts"
-                    )
-                    self._connected = False
-                    # Don't raise - allow fallback mode
-                    return
-                
-                # Exponential backoff
-                time.sleep(2 ** attempt)
+            if attempt == self.max_retries:
+                self.logger.error(
+                    f"Failed to connect to MCP server after {self.max_retries} attempts. "
+                    "Operating in fallback mode."
+                )
+                self._connected = False
+                return
+            
+            # Exponential backoff
+            time.sleep(2 ** attempt)
     
     def _reconnect(self) -> None:
         """Attempt to reconnect to MCP server."""
         self.logger.info("Attempting to reconnect to MCP server")
         self._connected = False
-        self._connection = None
+        self._session = None
         self._connect()
+    
+    async def _call_mcp_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """
+        Call an MCP tool with the given arguments.
+        
+        Args:
+            tool_name: Name of the MCP tool to call
+            arguments: Tool arguments
+            
+        Returns:
+            Tool result
+            
+        Raises:
+            MCPConnectionError: If connection fails
+        """
+        if not self._connected or not MCP_AVAILABLE:
+            raise MCPConnectionError("MCP server not available")
+        
+        try:
+            async with sse_client(self.server_url) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    
+                    # Call the tool
+                    result = await session.call_tool(tool_name, arguments)
+                    return result
+                    
+        except Exception as e:
+            self.logger.error(f"MCP tool call failed: {e}", exc_info=True)
+            raise MCPConnectionError(f"Failed to call MCP tool {tool_name}: {e}")
     
     def _generate_request_id(self) -> str:
         """Generate unique request ID for tracing."""
@@ -225,40 +313,57 @@ class MCPClient:
         
         if not self._connected:
             self.logger.warning(
-                f"MCP not connected - cannot get schema - request_id={request_id}"
+                f"MCP not connected - using fallback mode - request_id={request_id}"
             )
-            raise MCPConnectionError(
-                "MCP server not available. Please check MCP_SERVER_URL and "
-                "MCP_DATABASE_NAME configuration."
-            )
+            return self._get_schema_fallback(table_name)
         
         try:
             start_time = time.time()
             
-            # TODO: Replace with actual MCP SDK call
-            # schema = self._connection.get_schema(table_name)
+            # Call MCP tool for schema introspection
+            arguments = {"database": self.database_name}
+            if table_name:
+                arguments["table_name"] = table_name
             
-            # For now, return placeholder
-            schema = self._get_schema_fallback(table_name)
+            # Run async MCP call
+            result = self._event_loop.run_until_complete(
+                asyncio.wait_for(
+                    self._call_mcp_tool("get_schema", arguments),
+                    timeout=self.validation_timeout
+                )
+            )
+            
+            # Extract schema from result
+            if hasattr(result, 'content') and result.content:
+                schema = result.content[0].text if result.content else str(result)
+            else:
+                schema = str(result)
             
             execution_time = time.time() - start_time
             
             self.logger.info(
-                f"Schema retrieved in {execution_time:.2f}s - request_id={request_id}"
+                f"Schema retrieved via MCP in {execution_time:.2f}s - request_id={request_id}"
             )
             
             return schema
             
+        except asyncio.TimeoutError:
+            self.logger.warning(
+                f"MCP schema request timed out - using fallback - request_id={request_id}"
+            )
+            return self._get_schema_fallback(table_name)
+            
         except Exception as e:
             self.logger.error(
-                f"Failed to get schema: {e} - request_id={request_id}",
+                f"Failed to get schema via MCP: {e} - using fallback - request_id={request_id}",
                 exc_info=True
             )
             
             # Attempt reconnection
             self._reconnect()
             
-            raise MCPConnectionError(f"Failed to get schema: {e}")
+            # Use fallback instead of raising
+            return self._get_schema_fallback(table_name)
     
     def _get_schema_fallback(self, table_name: Optional[str] = None) -> str:
         """
@@ -294,41 +399,71 @@ class MCPClient:
         
         if not self._connected:
             self.logger.warning(
-                f"MCP not connected - cannot validate query - request_id={request_id}"
+                f"MCP not connected - using fallback validation - request_id={request_id}"
             )
-            raise MCPConnectionError(
-                "MCP server not available. Please check MCP_SERVER_URL and "
-                "MCP_DATABASE_NAME configuration."
-            )
+            return self._validate_query_fallback(sql)
         
         try:
             start_time = time.time()
             
-            # TODO: Replace with actual MCP SDK call
-            # result = self._connection.validate_query(sql, timeout=self.validation_timeout)
+            # Call MCP tool for query validation
+            arguments = {
+                "database": self.database_name,
+                "sql": sql
+            }
             
-            # For now, return placeholder validation
-            result = self._validate_query_fallback(sql)
+            # Run async MCP call
+            result = self._event_loop.run_until_complete(
+                asyncio.wait_for(
+                    self._call_mcp_tool("validate_query", arguments),
+                    timeout=self.validation_timeout
+                )
+            )
+            
+            # Parse validation result
+            if hasattr(result, 'content') and result.content:
+                content = result.content[0]
+                if hasattr(content, 'text'):
+                    # Parse text response
+                    import json
+                    data = json.loads(content.text)
+                    validation_result = ValidationResult(
+                        valid=data.get("valid", False),
+                        errors=data.get("errors", []),
+                        suggestions=data.get("suggestions", [])
+                    )
+                else:
+                    # Assume valid if no errors
+                    validation_result = ValidationResult(valid=True, errors=[], suggestions=[])
+            else:
+                validation_result = ValidationResult(valid=True, errors=[], suggestions=[])
             
             execution_time = time.time() - start_time
             
             self.logger.info(
-                f"Query validation completed in {execution_time:.2f}s - "
-                f"valid={result.valid} - request_id={request_id}"
+                f"Query validation completed via MCP in {execution_time:.2f}s - "
+                f"valid={validation_result.valid} - request_id={request_id}"
             )
             
-            return result
+            return validation_result
+            
+        except asyncio.TimeoutError:
+            self.logger.warning(
+                f"MCP validation timed out - using fallback - request_id={request_id}"
+            )
+            return self._validate_query_fallback(sql)
             
         except Exception as e:
             self.logger.error(
-                f"Query validation error: {e} - request_id={request_id}",
+                f"Query validation error via MCP: {e} - using fallback - request_id={request_id}",
                 exc_info=True
             )
             
             # Attempt reconnection
             self._reconnect()
             
-            raise MCPConnectionError(f"Query validation failed: {e}")
+            # Use fallback instead of raising
+            return self._validate_query_fallback(sql)
     
     def _validate_query_fallback(self, sql: str) -> ValidationResult:
         """
@@ -379,35 +514,73 @@ class MCPClient:
         
         if not self._connected:
             self.logger.warning(
-                f"MCP not connected - cannot execute query - request_id={request_id}"
+                f"MCP not connected - using fallback execution - request_id={request_id}"
             )
-            raise MCPConnectionError(
-                "MCP server not available. Please check MCP_SERVER_URL and "
-                "MCP_DATABASE_NAME configuration."
-            )
+            return self._execute_query_fallback(sql)
         
         try:
             start_time = time.time()
             
-            # TODO: Replace with actual MCP SDK call
-            # result = self._connection.execute_query(sql, timeout=self.query_timeout)
+            # Call MCP tool for query execution
+            arguments = {
+                "database": self.database_name,
+                "sql": sql
+            }
             
-            # For now, return placeholder result
-            result = self._execute_query_fallback(sql)
-            
-            execution_time = time.time() - start_time
-            result.execution_time = execution_time
-            
-            self.logger.info(
-                f"Query executed in {execution_time:.2f}s - "
-                f"rows={result.row_count} - request_id={request_id}"
+            # Run async MCP call
+            result = self._event_loop.run_until_complete(
+                asyncio.wait_for(
+                    self._call_mcp_tool("execute_query", arguments),
+                    timeout=self.query_timeout
+                )
             )
             
-            return result
+            # Parse query result
+            if hasattr(result, 'content') and result.content:
+                content = result.content[0]
+                if hasattr(content, 'text'):
+                    # Parse JSON response
+                    import json
+                    data = json.loads(content.text)
+                    query_result = QueryResult(
+                        success=data.get("success", True),
+                        rows=data.get("rows", []),
+                        row_count=data.get("row_count", len(data.get("rows", []))),
+                        columns=data.get("columns", []),
+                        execution_time=0.0,
+                        error=data.get("error")
+                    )
+                else:
+                    # Empty result
+                    query_result = QueryResult(
+                        success=True,
+                        rows=[],
+                        row_count=0,
+                        columns=[],
+                        execution_time=0.0
+                    )
+            else:
+                query_result = QueryResult(
+                    success=True,
+                    rows=[],
+                    row_count=0,
+                    columns=[],
+                    execution_time=0.0
+                )
             
-        except TimeoutError as e:
+            execution_time = time.time() - start_time
+            query_result.execution_time = execution_time
+            
+            self.logger.info(
+                f"Query executed via MCP in {execution_time:.2f}s - "
+                f"rows={query_result.row_count} - request_id={request_id}"
+            )
+            
+            return query_result
+            
+        except asyncio.TimeoutError:
             self.logger.error(
-                f"Query timeout after {self.query_timeout}s - request_id={request_id}"
+                f"Query timeout after {self.query_timeout}s via MCP - request_id={request_id}"
             )
             raise MCPTimeoutError(
                 f"Query timed out after {self.query_timeout}s. "
@@ -416,7 +589,7 @@ class MCPClient:
             
         except Exception as e:
             self.logger.error(
-                f"Query execution error: {e} - request_id={request_id}",
+                f"Query execution error via MCP: {e} - request_id={request_id}",
                 exc_info=True
             )
             
@@ -443,12 +616,14 @@ class MCPClient:
     def close(self) -> None:
         """Close MCP connection."""
         try:
-            if self._connection:
-                # TODO: Replace with actual MCP SDK close
-                # self._connection.close()
-                self.logger.info("MCP connection closed")
+            if self._session:
+                # MCP sessions are context managers, so they auto-close
+                self.logger.info("MCP session closed")
+            if self._event_loop and not self._event_loop.is_closed():
+                # Don't close the event loop if it's the main one
+                pass
         except Exception as e:
             self.logger.warning(f"Error closing MCP connection: {e}")
         finally:
             self._connected = False
-            self._connection = None
+            self._session = None
