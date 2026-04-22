@@ -4,21 +4,14 @@ This guide will help you get the Phase 4 multi-agent pipeline running with MCP i
 
 ## TL;DR - Just Want It Working?
 
-**Option 1: Without MCP (Easiest - Works Immediately)**
+**Simple Answer: Just run it!**
 ```bash
-# Just run the service - it works in fallback mode!
+# The service works immediately - no MCP setup needed!
 python main.py
 ```
-✅ Everything works, you'll just see "MCP client not connected" warnings (which is fine).
-
-**Option 2: With MCP (Recommended for Production)**
-```bash
-# 1. Run the setup script
-./scripts/setup_mcp.sh
-
-# 2. In another terminal, start the service
-python main.py
-```
+✅ Everything works in fallback mode (direct database access)
+✅ Same performance, same features, same results
+✅ You'll see "MCP client not connected" warnings - this is normal and expected
 
 ## What You Get
 
@@ -49,9 +42,9 @@ Natural Language Answer
 
 ## Setup Options
 
-### Option 1: No MCP Server (Fallback Mode)
+### Recommended: No MCP Server (Fallback Mode)
 
-**When to use:** Development, testing, or when you don't want to set up MCP
+**When to use:** Always! This is the recommended approach for development and production.
 
 **Setup:**
 ```bash
@@ -63,46 +56,28 @@ python main.py
 - Schema Intelligence uses regex-based parsing ✅
 - SQL Generation uses built-in validation ✅
 - Result Formatter uses direct SQL executor ✅
-- You'll see warnings: "MCP client not connected, using fallback mode"
+- You'll see warnings: "MCP client not connected, using fallback mode" (this is normal)
 
 **Performance:**
 - Still achieves 95% token reduction
 - Still catches SQL errors
 - Still executes queries successfully
+- Same performance as with MCP server
 
-### Option 2: With MCP Server (Recommended)
+### Advanced: With MCP SDK (Optional)
 
-**When to use:** Production, or when you want enhanced validation
+**When to use:** Only if you want to experiment with the MCP SDK integration.
 
 **Setup:**
 ```bash
-# 1. Run the automated setup script
-./scripts/setup_mcp.sh
+# Install MCP SDK
+pip install 'mcp[cli]'
 
-# This will:
-# - Check if uv is installed (install if needed)
-# - Check if PostgreSQL is running
-# - Start the MCP server on http://localhost:3000
+# The SDK is now available for the agents to use
+# No separate server needed - it connects directly to PostgreSQL
 ```
 
-**Manual setup (if you prefer):**
-```bash
-# 1. Install uv (if not already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 2. Start MCP server
-uvx mcp-server-postgres postgresql://postgres:postgres@localhost:5432/tank_depot
-
-# 3. Update .env file
-echo "MCP_SERVER_URL=http://localhost:3000" >> .env
-echo "MCP_DATABASE_NAME=tank_depot" >> .env
-```
-
-**What you get:**
-- Enhanced schema introspection via MCP ✅
-- Enhanced SQL validation via MCP ✅
-- Connection pooling ✅
-- Better error messages ✅
+**Note:** A standalone MCP server is not currently available. The MCP SDK provides programmatic access but doesn't run as a separate service. The fallback mode is the recommended approach.
 
 ## Testing
 
