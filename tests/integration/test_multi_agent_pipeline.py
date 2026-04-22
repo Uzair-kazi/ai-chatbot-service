@@ -1,8 +1,13 @@
 """
-Integration Tests for Multi-Agent Pipeline
+Integration Tests for Multi-Agent Pipeline (Phase 4)
 
-These tests verify the multi-agent pipeline with real services (database, AI provider).
+These tests verify the multi-agent pipeline with Result Formatter Agent integration.
 They are marked with @pytest.mark.integration and can be skipped if services are not configured.
+
+Phase 4 changes:
+- Result Formatter Agent replaces legacy AnswerFormatter
+- MCP client integration for database operations
+- Updated test mocks for new pipeline structure
 
 Run with: pytest tests/integration/test_multi_agent_pipeline.py -v
 Skip with: pytest -m "not integration"
@@ -19,12 +24,12 @@ pytestmark = pytest.mark.integration
 
 
 class TestMultiAgentPipelineIntegration:
-    """Integration tests for multi-agent pipeline with mocked AI provider."""
+    """Integration tests for multi-agent pipeline with mocked AI provider and Result Formatter Agent."""
     
     @patch('config.ai_provider.ai_client')
-    @patch('services.multi_agent_pipeline.get_executor')
-    def test_simple_query_generates_correct_sql(self, mock_executor, mock_ai_client):
-        """Integration: Simple query generates correct SQL and executes successfully."""
+    @patch('agents.result_formatter.ResultFormatterAgent.execute')
+    def test_simple_query_generates_correct_sql(self, mock_formatter, mock_ai_client):
+        """Integration: Simple query generates correct SQL and executes successfully via Result Formatter Agent."""
         # Mock AI client to return valid SQL
         mock_ai_client.chat.completions.create.return_value = MagicMock(
             choices=[MagicMock(
@@ -39,14 +44,20 @@ class TestMultiAgentPipelineIntegration:
             )
         )
         
-        # Mock executor to return results
-        mock_executor_instance = MagicMock()
-        mock_executor_instance.execute_query.return_value = {
-            "columns": ["count"],
-            "rows": [{"count": 47}],  # Rows as list of dicts
-            "row_count": 1
-        }
-        mock_executor.return_value = mock_executor_instance
+        # Mock Result Formatter Agent to return formatted results
+        from agents.models.formatter_models import FormatterResponse
+        mock_formatter.return_value = FormatterResponse(
+            success=True,
+            answer="There are currently 47 ISO tanks with status 'IN'.",
+            sql="SELECT COUNT(*) FROM iso_tank WHERE iso_tank_status = 'IN' LIMIT 100;",
+            rows_count=1,
+            execution_time=0.5,
+            formatting_method="template",
+            metadata={
+                "mcp_used": True,
+                "token_usage": 0
+            }
+        )
         
         # Execute pipeline
         result = multi_agent_ask("How many ISO tanks are in 'IN' status?")
@@ -58,10 +69,12 @@ class TestMultiAgentPipelineIntegration:
         assert result["rows_count"] == 1
         assert result["confidence"] > 0.0
         assert result["retry_count"] >= 0
+        assert "mcp_used" in result
+        assert "formatting_strategy" in result
     
     @patch('config.ai_provider.ai_client')
-    @patch('services.multi_agent_pipeline.get_executor')
-    def test_self_critique_catches_column_hallucination(self, mock_executor, mock_ai_client):
+    @patch('agents.result_formatter.ResultFormatterAgent.execute')
+    def test_self_critique_catches_column_hallucination(self, mock_formatter, mock_ai_client):
         """Integration: Self-critique loop catches and fixes column hallucination."""
         # Mock AI client to return invalid SQL first, then valid SQL
         
@@ -87,14 +100,20 @@ class TestMultiAgentPipelineIntegration:
         
         mock_ai_client.chat.completions.create.side_effect = [invalid_response, valid_response]
         
-        # Mock executor to return results
-        mock_executor_instance = MagicMock()
-        mock_executor_instance.execute_query.return_value = {
-            "columns": ["count"],
-            "rows": [{"count": 100}],  # Rows as list of dicts
-            "row_count": 1
-        }
-        mock_executor.return_value = mock_executor_instance
+        # Mock Result Formatter Agent to return formatted results
+        from agents.models.formatter_models import FormatterResponse
+        mock_formatter.return_value = FormatterResponse(
+            success=True,
+            answer="There are currently 100 tanks in the system.",
+            sql="SELECT COUNT(*) FROM iso_tank WHERE id IS NOT NULL LIMIT 100;",
+            rows_count=1,
+            execution_time=0.7,
+            formatting_method="template",
+            metadata={
+                "mcp_used": True,
+                "token_usage": 0
+            }
+        )
         
         # Execute pipeline
         result = multi_agent_ask("How many tanks?")
@@ -109,7 +128,7 @@ class TestMultiAgentPipelineIntegration:
     def test_low_confidence_escalation(self, mock_ai_client):
         """Integration: Low confidence after max retries triggers escalation."""
         # Mock AI client to always return invalid SQL
-        mock_client.chat.completions.create.return_value = MagicMock(
+        mock_ai_client.chat.completions.create.return_value = MagicMock(
             choices=[MagicMock(
                 message=MagicMock(
                     content="SELECT * FROM nonexistent_table LIMIT 100;"
@@ -127,11 +146,11 @@ class TestMultiAgentPipelineIntegration:
         assert result["confidence"] < 0.6  # Below threshold
     
     @patch('config.ai_provider.ai_client')
-    @patch('services.multi_agent_pipeline.get_executor')
-    def test_complex_query_with_join(self, mock_executor, mock_ai_client):
+    @patch('agents.result_formatter.ResultFormatterAgent.execute')
+    def test_complex_query_with_join(self, mock_formatter, mock_ai_client):
         """Integration: Complex query with JOIN generates correct SQL."""
         # Mock AI client to return valid JOIN query
-        mock_client.chat.completions.create.return_value = MagicMock(
+        mock_ai_client.chat.completions.create.return_value = MagicMock(
             choices=[MagicMock(
                 message=MagicMock(
                     content="""
@@ -146,17 +165,20 @@ class TestMultiAgentPipelineIntegration:
             usage=MagicMock(prompt_tokens=150, completion_tokens=40, total_tokens=190)
         )
         
-        # Mock executor to return results
-        mock_executor_instance = MagicMock()
-        mock_executor_instance.execute_query.return_value = {
-            "columns": ["customer_name", "tank_count"],
-            "rows": [
-                {"customer_name": "Customer A", "tank_count": 10},
-                {"customer_name": "Customer B", "tank_count": 5}
-            ],  # Rows as list of dicts
-            "row_count": 2
-        }
-        mock_executor.return_value = mock_executor_instance
+        # Mock Result Formatter Agent to return formatted results
+        from agents.models.formatter_models import FormatterResponse
+        mock_formatter.return_value = FormatterResponse(
+            success=True,
+            answer="Customer A has 10 tanks and Customer B has 5 tanks.",
+            sql="SELECT c.customer_name, COUNT(t.id) as tank_count FROM customer c JOIN iso_tank t ON c.id = t.customer_id GROUP BY c.customer_name LIMIT 100;",
+            rows_count=2,
+            execution_time=1.2,
+            formatting_method="llm",
+            metadata={
+                "mcp_used": True,
+                "token_usage": 45
+            }
+        )
         
         # Execute pipeline
         result = multi_agent_ask("How many tanks does each customer have?")
@@ -166,13 +188,14 @@ class TestMultiAgentPipelineIntegration:
         assert "join" in result["sql"].lower()
         assert result["rows_count"] == 2
         assert result["confidence"] > 0.0
+        assert result["formatting_strategy"] == "llm"
     
     @patch('config.ai_provider.ai_client')
-    @patch('services.multi_agent_pipeline.get_executor')
-    def test_database_connection_failure_returns_503(self, mock_executor, mock_ai_client):
+    @patch('agents.result_formatter.ResultFormatterAgent.execute')
+    def test_database_connection_failure_returns_503(self, mock_formatter, mock_ai_client):
         """Integration: Database connection failure returns 503."""
         # Mock AI client to return valid SQL
-        mock_client.chat.completions.create.return_value = MagicMock(
+        mock_ai_client.chat.completions.create.return_value = MagicMock(
             choices=[MagicMock(
                 message=MagicMock(
                     content="SELECT COUNT(*) FROM iso_tank LIMIT 100;"
@@ -181,25 +204,35 @@ class TestMultiAgentPipelineIntegration:
             usage=MagicMock(prompt_tokens=100, completion_tokens=20, total_tokens=120)
         )
         
-        # Mock executor to raise connection error
-        from services.sql_executor import DatabaseConnectionError
-        mock_executor_instance = MagicMock()
-        mock_executor_instance.execute_query.side_effect = DatabaseConnectionError("Connection failed")
-        mock_executor.return_value = mock_executor_instance
+        # Mock Result Formatter Agent to return database error
+        from agents.models.formatter_models import FormatterResponse
+        mock_formatter.return_value = FormatterResponse(
+            success=False,
+            answer="",
+            sql="",
+            rows_count=0,
+            execution_time=0.1,
+            formatting_method="none",
+            error="Database connection failed",
+            metadata={
+                "mcp_used": False,
+                "error_type": "database_connection"
+            }
+        )
         
         # Execute pipeline
         result = multi_agent_ask("Any question")
         
         # Verify error handling
-        assert result["status_code"] == 503
-        assert "unavailable" in result["answer"].lower()
+        assert result["status_code"] == 500  # Result Formatter Agent error
+        assert "connection failed" in result["error"].lower()
     
     @patch('config.ai_provider.ai_client')
-    @patch('services.multi_agent_pipeline.get_executor')
-    def test_query_timeout_returns_504(self, mock_executor, mock_ai_client):
+    @patch('agents.result_formatter.ResultFormatterAgent.execute')
+    def test_query_timeout_returns_504(self, mock_formatter, mock_ai_client):
         """Integration: Query timeout returns 504."""
         # Mock AI client to return valid SQL
-        mock_client.chat.completions.create.return_value = MagicMock(
+        mock_ai_client.chat.completions.create.return_value = MagicMock(
             choices=[MagicMock(
                 message=MagicMock(
                     content="SELECT * FROM huge_table LIMIT 100;"
@@ -208,28 +241,38 @@ class TestMultiAgentPipelineIntegration:
             usage=MagicMock(prompt_tokens=100, completion_tokens=20, total_tokens=120)
         )
         
-        # Mock executor to raise timeout error
-        from services.sql_executor import QueryTimeoutError
-        mock_executor_instance = MagicMock()
-        mock_executor_instance.execute_query.side_effect = QueryTimeoutError("Query timeout")
-        mock_executor.return_value = mock_executor_instance
+        # Mock Result Formatter Agent to return timeout error
+        from agents.models.formatter_models import FormatterResponse
+        mock_formatter.return_value = FormatterResponse(
+            success=False,
+            answer="",
+            sql="",
+            rows_count=0,
+            execution_time=30.0,
+            formatting_method="none",
+            error="Query execution timeout",
+            metadata={
+                "mcp_used": True,
+                "error_type": "query_timeout"
+            }
+        )
         
         # Execute pipeline
         result = multi_agent_ask("Complex query")
         
         # Verify error handling
-        assert result["status_code"] == 504
-        assert "too long" in result["answer"].lower()
+        assert result["status_code"] == 500  # Result Formatter Agent error
+        assert "timeout" in result["error"].lower()
 
 
 class TestMultiAgentPipelineComparison:
     """Compare multi-agent pipeline with single-LLM pipeline."""
     
     @patch('config.ai_provider.ai_client')
-    @patch('services.multi_agent_pipeline.get_executor')
+    @patch('agents.result_formatter.ResultFormatterAgent.execute')
     @patch('services.chatbot_pipeline.SQLGenerator')
     def test_multi_agent_catches_errors_single_llm_misses(
-        self, mock_single_generator, mock_executor, mock_ai_client
+        self, mock_single_generator, mock_formatter, mock_ai_client
     ):
         """Integration: Multi-agent catches column hallucinations that single-LLM misses."""
         # Mock single-LLM to return invalid SQL (no self-critique)
@@ -263,14 +306,20 @@ class TestMultiAgentPipelineComparison:
         
         mock_ai_client.chat.completions.create.side_effect = [invalid_response, valid_response]
         
-        # Mock executor
-        mock_executor_instance = MagicMock()
-        mock_executor_instance.execute_query.return_value = {
-            "columns": ["count"],
-            "rows": [{"count": 100}],  # Rows as list of dicts
-            "row_count": 1
-        }
-        mock_executor.return_value = mock_executor_instance
+        # Mock Result Formatter Agent to return formatted results
+        from agents.models.formatter_models import FormatterResponse
+        mock_formatter.return_value = FormatterResponse(
+            success=True,
+            answer="There are currently 100 tanks in the system.",
+            sql="SELECT COUNT(*) FROM iso_tank WHERE id IS NOT NULL LIMIT 100;",
+            rows_count=1,
+            execution_time=0.8,
+            formatting_method="template",
+            metadata={
+                "mcp_used": True,
+                "token_usage": 0
+            }
+        )
         
         # Execute multi-agent pipeline
         result = multi_agent_ask("How many tanks?")

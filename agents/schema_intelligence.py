@@ -244,8 +244,93 @@ class SchemaIntelligenceAgent(BaseAgent):
         """
         Build foreign key relationship graph from schema.
         
-        Parses schema string to extract foreign key relationships and builds
-        a directed graph for traversal.
+        Phase 3: Enhanced with MCP client for improved foreign key discovery.
+        Falls back to regex parsing if MCP is unavailable.
+        
+        Args:
+            schema: Schema description string from SchemaIntrospector
+            
+        Returns:
+            SchemaGraph with tables, relationships, and adjacency list
+        """
+        # Try MCP-enhanced graph building first
+        try:
+            if self.mcp_client.is_connected():
+                mcp_graph = self._build_fk_graph_with_mcp(schema)
+                if mcp_graph is not None:
+                    self.logger.info("Built foreign key graph using MCP client")
+                    return mcp_graph
+                else:
+                    self.logger.warning("MCP graph building returned no result, falling back to regex parsing")
+            else:
+                self.logger.info("MCP client not connected, using regex parsing for foreign key graph")
+        except Exception as e:
+            self.logger.warning(f"MCP graph building failed: {e}, falling back to regex parsing")
+        
+        # Fallback to regex-based parsing
+        return self._build_fk_graph_fallback(schema)
+    
+    def _build_fk_graph_with_mcp(self, schema: str) -> Optional[SchemaGraph]:
+        """
+        Build foreign key graph using MCP client for enhanced accuracy.
+        
+        Args:
+            schema: Schema description string
+            
+        Returns:
+            SchemaGraph with MCP-enhanced relationships or None if MCP fails
+        """
+        try:
+            # Get schema information from MCP
+            mcp_schema = self.mcp_client.get_schema()
+            
+            if not mcp_schema:
+                return None
+            
+            graph = SchemaGraph()
+            
+            # Process MCP schema data
+            for table_info in mcp_schema.tables:
+                table_name = table_info.name
+                graph.tables.add(table_name)
+                
+                if table_name not in graph.adjacency_list:
+                    graph.adjacency_list[table_name] = {}
+                
+                # Process foreign key relationships from MCP
+                for fk in table_info.foreign_keys:
+                    source_column = fk.column_name
+                    target_table = fk.referenced_table
+                    target_column = fk.referenced_column
+                    
+                    # Add relationship
+                    relationship = ForeignKeyRelationship(
+                        source_table=table_name,
+                        source_column=source_column,
+                        target_table=target_table,
+                        target_column=target_column
+                    )
+                    graph.relationships.append(relationship)
+                    
+                    # Add to adjacency list (forward direction)
+                    graph.adjacency_list[table_name][source_column] = (target_table, target_column)
+                    
+                    # Add reverse relationship for bidirectional traversal
+                    if target_table not in graph.adjacency_list:
+                        graph.adjacency_list[target_table] = {}
+                    # Store reverse relationship with special marker
+                    reverse_key = f"_reverse_{table_name}_{source_column}"
+                    graph.adjacency_list[target_table][reverse_key] = (table_name, source_column)
+            
+            return graph
+            
+        except Exception as e:
+            self.logger.warning(f"MCP foreign key graph building error: {e}")
+            return None
+    
+    def _build_fk_graph_fallback(self, schema: str) -> SchemaGraph:
+        """
+        Build foreign key graph using regex parsing (fallback mode).
         
         Args:
             schema: Schema description string from SchemaIntrospector
@@ -475,6 +560,70 @@ class SchemaIntelligenceAgent(BaseAgent):
     def _parse_schema_columns(self, schema: str) -> Dict[str, Set[str]]:
         """
         Parse schema to extract table-column mapping.
+        
+        Phase 3: Enhanced with MCP client for improved column discovery.
+        Falls back to regex parsing if MCP is unavailable.
+        
+        Args:
+            schema: Schema description string
+            
+        Returns:
+            Dictionary mapping table names to sets of column names
+        """
+        # Try MCP-enhanced column parsing first
+        try:
+            if self.mcp_client.is_connected():
+                mcp_columns = self._parse_schema_columns_with_mcp(schema)
+                if mcp_columns is not None:
+                    self.logger.info("Parsed schema columns using MCP client")
+                    return mcp_columns
+                else:
+                    self.logger.warning("MCP column parsing returned no result, falling back to regex parsing")
+            else:
+                self.logger.info("MCP client not connected, using regex parsing for schema columns")
+        except Exception as e:
+            self.logger.warning(f"MCP column parsing failed: {e}, falling back to regex parsing")
+        
+        # Fallback to regex-based parsing
+        return self._parse_schema_columns_fallback(schema)
+    
+    def _parse_schema_columns_with_mcp(self, schema: str) -> Optional[Dict[str, Set[str]]]:
+        """
+        Parse schema columns using MCP client for enhanced accuracy.
+        
+        Args:
+            schema: Schema description string
+            
+        Returns:
+            Dictionary mapping table names to column sets or None if MCP fails
+        """
+        try:
+            # Get schema information from MCP
+            mcp_schema = self.mcp_client.get_schema()
+            
+            if not mcp_schema:
+                return None
+            
+            table_columns = {}
+            
+            # Process MCP schema data
+            for table_info in mcp_schema.tables:
+                table_name = table_info.name
+                table_columns[table_name] = set()
+                
+                # Add columns from MCP
+                for column in table_info.columns:
+                    table_columns[table_name].add(column.name)
+            
+            return table_columns
+            
+        except Exception as e:
+            self.logger.warning(f"MCP schema column parsing error: {e}")
+            return None
+    
+    def _parse_schema_columns_fallback(self, schema: str) -> Dict[str, Set[str]]:
+        """
+        Parse schema columns using regex parsing (fallback mode).
         
         Args:
             schema: Schema description string
