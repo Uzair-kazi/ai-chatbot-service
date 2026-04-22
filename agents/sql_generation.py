@@ -1,13 +1,18 @@
 """
-SQL Generation Agent with Self-Critique Loop
+SQL Generation Agent with Self-Critique Loop and MCP Validation
 
 This agent generates SQL queries from natural language questions and validates
 them against the database schema. If validation fails, it retries with error
 feedback to guide regeneration.
 
+Phase 3 enhancements:
+- MCP client integration for enhanced SQL validation
+- Fallback to built-in validation when MCP server unavailable
+- Improved error detection and feedback
+
 Self-critique loop:
 1. Generate SQL using AI
-2. Validate against schema (table/column existence, JOIN validity, safety)
+2. Validate against schema (MCP-enhanced or built-in validation)
 3. If invalid, retry with specific validation feedback
 4. Confidence decays with each retry: 0.9 → 0.75 → 0.6
 
@@ -19,6 +24,7 @@ import re
 import time
 from typing import Tuple, List
 from agents.base import BaseAgent, AgentExecutionError
+from agents.mcp_client import MCPClient
 from agents.models.query_models import SQLGenerationRequest, SQLGenerationResponse
 from config.ai_provider import ai_client, model_name, SDK_TYPE
 from config.logging_config import get_logger
@@ -28,10 +34,15 @@ logger = get_logger(__name__)
 
 class SQLGenerationAgent(BaseAgent):
     """
-    SQL Generation agent with self-critique loop.
+    SQL Generation agent with self-critique loop and MCP validation.
     
     Generates SQL queries from natural language and validates them against the
     database schema. Retries with validation feedback if generation fails.
+    
+    Phase 3 enhancements:
+    - MCP client integration for enhanced SQL validation
+    - Graceful fallback when MCP server unavailable
+    - Improved error detection and suggestions
     
     Attributes:
         name: Agent name
@@ -39,6 +50,7 @@ class SQLGenerationAgent(BaseAgent):
         ai_client: AI provider client
         model_name: AI model name
         sdk_type: SDK type (openai_compatible or anthropic)
+        mcp_client: MCP client for enhanced validation
     """
     
     # Few-shot examples covering common patterns
@@ -65,11 +77,13 @@ SQL: SELECT tank_number, service_tank_status, created_at FROM service_tank ORDER
 """
     
     def __init__(self):
-        """Initialize the SQL Generation agent."""
+        """Initialize the SQL Generation agent with MCP client."""
         super().__init__(name="SQLGenerationAgent")
         self.ai_client = ai_client
         self.model_name = model_name
         self.sdk_type = SDK_TYPE
+        self.mcp_client = MCPClient()
+        self.logger.info("SQL Generation agent initialized with MCP client")
     
     def execute(self, request: SQLGenerationRequest) -> SQLGenerationResponse:
         """
@@ -127,7 +141,9 @@ SQL: SELECT tank_number, service_tank_status, created_at FROM service_tank ORDER
                         confidence=confidence,
                         metadata={
                             "execution_time": time.time() - start_time,
-                            "attempts": attempt + 1
+                            "attempts": attempt + 1,
+                            "mcp_available": self.mcp_client.is_connected(),
+                            "mcp_used": self.mcp_client.is_connected()
                         }
                     )
                 else:
@@ -162,7 +178,9 @@ SQL: SELECT tank_number, service_tank_status, created_at FROM service_tank ORDER
                                   f"Validation issues: {'; '.join(issues)}",
                             metadata={
                                 "execution_time": time.time() - start_time,
-                                "attempts": attempt + 1
+                                "attempts": attempt + 1,
+                                "mcp_available": self.mcp_client.is_connected(),
+                                "mcp_used": self.mcp_client.is_connected()
                             }
                         )
                         
@@ -185,7 +203,9 @@ SQL: SELECT tank_number, service_tank_status, created_at FROM service_tank ORDER
                         error=f"SQL generation failed: {str(e)}",
                         metadata={
                             "execution_time": time.time() - start_time,
-                            "attempts": attempt + 1
+                            "attempts": attempt + 1,
+                            "mcp_available": self.mcp_client.is_connected(),
+                            "mcp_used": False  # Exception occurred before validation
                         }
                     )
     
@@ -331,11 +351,80 @@ Please fix these issues in your new SQL query. Pay special attention to:
         """
         Validate SQL against schema and safety rules.
         
+        Phase 3: Enhanced with MCP client for improved validation.
+        Falls back to built-in validation if MCP is unavailable.
+        
         Checks:
         - Table existence
         - Column existence
         - JOIN validity (ON clauses present)
         - Safety (no dangerous operations)
+        - SQL syntax (via MCP when available)
+        
+        Args:
+            sql: SQL query to validate
+            schema: Database schema
+            
+        Returns:
+            Tuple of (is_valid, list of validation issues)
+        """
+        # Try MCP-enhanced validation first
+        try:
+            if self.mcp_client.is_connected():
+                mcp_result = self._validate_sql_with_mcp(sql, schema)
+                if mcp_result is not None:
+                    is_valid, issues = mcp_result
+                    self.logger.info(f"MCP validation successful: valid={is_valid}, issues={len(issues)}")
+                    return (is_valid, issues)
+                else:
+                    self.logger.warning("MCP validation returned no result, falling back to built-in validation")
+            else:
+                self.logger.info("MCP client not connected, using built-in validation")
+        except Exception as e:
+            self.logger.warning(f"MCP validation failed: {e}, falling back to built-in validation")
+        
+        # Fallback to built-in validation
+        return self._validate_sql_fallback(sql, schema)
+    
+    def _validate_sql_with_mcp(self, sql: str, schema: str) -> Tuple[bool, List[str]]:
+        """
+        Validate SQL using MCP client for enhanced accuracy.
+        
+        Args:
+            sql: SQL query to validate
+            schema: Database schema
+            
+        Returns:
+            Tuple of (is_valid, list of validation issues) or None if MCP validation fails
+        """
+        try:
+            # Use MCP client for validation
+            validation_result = self.mcp_client.validate_query(sql)
+            
+            if validation_result:
+                # Convert MCP ValidationResult to our format
+                issues = []
+                
+                # Add MCP-detected errors
+                if validation_result.errors:
+                    issues.extend(validation_result.errors)
+                
+                # Still check safety rules locally (MCP might not catch all security issues)
+                safety_issues = self._check_safety_rules(sql)
+                issues.extend(safety_issues)
+                
+                is_valid = validation_result.valid and len(safety_issues) == 0
+                
+                return (is_valid, issues)
+            
+        except Exception as e:
+            self.logger.warning(f"MCP validation error: {e}")
+        
+        return None
+    
+    def _validate_sql_fallback(self, sql: str, schema: str) -> Tuple[bool, List[str]]:
+        """
+        Validate SQL using built-in validation logic (fallback mode).
         
         Args:
             sql: SQL query to validate
@@ -351,22 +440,12 @@ Please fix these issues in your new SQL query. Pay special attention to:
             issues.append("SQL query is empty")
             return (False, issues)
         
+        # Check safety rules
+        safety_issues = self._check_safety_rules(sql)
+        issues.extend(safety_issues)
+        
         # Parse schema
         valid_tables, valid_columns = self._parse_schema(schema)
-        
-        # Check safety (dangerous keywords)
-        dangerous_keywords = [
-            'DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER',
-            'TRUNCATE', 'GRANT', 'REVOKE', 'CREATE', 'REPLACE'
-        ]
-        sql_upper = sql.upper()
-        for keyword in dangerous_keywords:
-            if re.search(r'\b' + keyword + r'\b', sql_upper):
-                issues.append(f"Dangerous SQL keyword '{keyword}' is not allowed")
-        
-        # Check that query starts with SELECT
-        if not sql.strip().upper().startswith('SELECT'):
-            issues.append("Only SELECT queries are allowed")
         
         # Extract and validate tables
         sql_tables = self._extract_tables(sql)
@@ -413,6 +492,34 @@ Please fix these issues in your new SQL query. Pay special attention to:
         # Return validation result
         is_valid = len(issues) == 0
         return (is_valid, issues)
+    
+    def _check_safety_rules(self, sql: str) -> List[str]:
+        """
+        Check SQL safety rules (dangerous operations).
+        
+        Args:
+            sql: SQL query to check
+            
+        Returns:
+            List of safety issues
+        """
+        issues = []
+        
+        # Check for dangerous keywords
+        dangerous_keywords = [
+            'DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER',
+            'TRUNCATE', 'GRANT', 'REVOKE', 'CREATE', 'REPLACE'
+        ]
+        sql_upper = sql.upper()
+        for keyword in dangerous_keywords:
+            if re.search(r'\b' + keyword + r'\b', sql_upper):
+                issues.append(f"Dangerous SQL keyword '{keyword}' is not allowed")
+        
+        # Check that query starts with SELECT
+        if not sql.strip().upper().startswith('SELECT'):
+            issues.append("Only SELECT queries are allowed")
+        
+        return issues
     
     def _parse_schema(self, schema: str) -> Tuple[set, dict]:
         """

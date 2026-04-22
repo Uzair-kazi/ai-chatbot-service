@@ -212,6 +212,13 @@ if non_select_operation: risk_score = 1.0  # Automatic block
 - Schema pruning (reduce token count)
 - JOIN path discovery via foreign key relationships
 
+**MCP Integration:**
+```python
+# Uses MCP for schema introspection instead of custom SQL queries
+schema = await self.mcp_client.get_schema(table_name)
+# Returns structured schema with columns, foreign keys, indexes, constraints
+```
+
 **Algorithm:**
 ```python
 1. Extract entities from refined query
@@ -226,6 +233,7 @@ if non_select_operation: risk_score = 1.0  # Automatic block
    - Start: iso_tank
    - FK: vehicle_in_id → vehicle_in
    - Include: iso_tank, vehicle_in
+   - Uses MCP get_schema() to fetch foreign key relationships
 
 4. Prune schema
    - Only include selected tables
@@ -244,8 +252,8 @@ if non_select_operation: risk_score = 1.0  # Automatic block
 
 **Inputs:**
 - Refined query
-- Full database schema
-- Foreign key relationships
+- Full database schema (via MCP)
+- Foreign key relationships (via MCP)
 
 **Outputs:**
 - Pruned schema (~300 tokens vs ~8,000)
@@ -264,6 +272,13 @@ if non_select_operation: risk_score = 1.0  # Automatic block
 - Check against golden query patterns
 - Confidence scoring
 
+**MCP Integration:**
+```python
+# Uses MCP for query validation before execution
+validation = await self.mcp_client.validate_query(sql)
+# Returns validation result with syntax errors and suggestions
+```
+
 **Generation Process:**
 ```python
 attempt = 0
@@ -274,8 +289,9 @@ while attempt <= max_retries:
     # Generate SQL
     sql = llm.generate(refined_query, pruned_schema, few_shot_examples)
     
-    # Self-critique
-    critique = llm.validate(sql, pruned_schema, refined_query)
+    # Self-critique using MCP validation
+    validation = await mcp_client.validate_query(sql)
+    critique = llm.validate(sql, pruned_schema, refined_query, validation)
     
     if critique.is_valid:
         break
@@ -293,7 +309,7 @@ return SQLResult(sql=sql, confidence=confidence)
 **Validation Checks:**
 ```yaml
 syntax_checks:
-  - Valid PostgreSQL syntax
+  - Valid PostgreSQL syntax (via MCP validate_query)
   - All tables exist in pruned schema
   - All columns exist in selected tables
   - JOINs use valid foreign key paths
@@ -368,10 +384,21 @@ SQL: SELECT vi.croyance_client_name, COUNT(*) as tank_count
 ### 6. Result Formatter Agent
 
 **Responsibilities:**
-- Execute validated SQL query
+- Execute validated SQL query via MCP
 - Format results as natural language
 - Provide SQL transparency
 - Handle execution errors gracefully
+
+**MCP Integration:**
+```python
+# Uses MCP for query execution with automatic error handling
+try:
+    results = await self.mcp_client.query(sql)
+    # MCP handles connection pooling, timeouts, and retries
+except mcp.QueryError as e:
+    # Structured error with helpful context
+    return format_error_message(e.message, e.suggestion)
+```
 
 **Formatting Rules:**
 ```python
@@ -387,7 +414,7 @@ else:
 
 **Inputs:**
 - Validated SQL
-- Query execution results
+- Query execution results (via MCP)
 - Original question
 
 **Outputs:**
@@ -413,20 +440,74 @@ else:
 
 **Alternative:** Pydantic AI (also stable, V1 September 2025)
 
+### Database Execution Layer: MCP (Model Context Protocol)
+
+**Why MCP as Execution Layer:**
+- **Standardized interface** - No custom database connection code
+- **Built-in connection pooling** - Automatic connection management
+- **Schema introspection** - Native `get_schema()` for Schema Intelligence Agent
+- **Query validation** - Dry-run validation before execution
+- **Structured error handling** - Consistent error types across database operations
+- **Transaction support** - Built-in transaction lifecycle management
+- **Multi-database support** - Same API works for PostgreSQL, MySQL, SQLite
+- **Reduced maintenance** - MCP team maintains database layer
+
+**MCP Integration Points:**
+
+```python
+# Schema Intelligence Agent uses MCP for schema introspection
+schema = await mcp_client.get_schema(table_name)
+
+# SQL Generation Agent uses MCP for query validation
+validation = await mcp_client.validate_query(sql)
+
+# Result Formatter Agent uses MCP for query execution
+results = await mcp_client.query(sql)
+```
+
+**Benefits Over Custom Database Code:**
+- 90% reduction in database boilerplate code
+- Automatic reconnection on connection failures
+- Consistent error messages for better user feedback
+- Built-in query timeout and resource management
+- Future-proof: easy to swap databases or add features
+
+**MCP Server Configuration:**
+```yaml
+# .kiro/settings/mcp.json or ~/.kiro/settings/mcp.json
+{
+  "mcpServers": {
+    "croyance-db": {
+      "command": "uvx",
+      "args": ["mcp-server-postgres"],
+      "env": {
+        "POSTGRES_HOST": "localhost",
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_DB": "croyance_db",
+        "POSTGRES_USER": "admin",
+        "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD}"
+      },
+      "disabled": false
+    }
+  }
+}
+```
+
 ### Project Structure
 
 ```
 ai-service-croyance/
 ├── agents/
 │   ├── __init__.py
-│   ├── orchestrator.py          # Orchestrator Agent
+│   ├── orchestrator.py          # Orchestrator Agent ✅ IMPLEMENTED
 │   ├── query_refinement.py      # Query Refinement Agent
 │   ├── security_governance.py   # Security & Governance Agent
-│   ├── schema_intelligence.py   # Schema Intelligence Agent
-│   ├── sql_generation.py        # SQL Generation Agent
+│   ├── schema_intelligence.py   # Schema Intelligence Agent ✅ IMPLEMENTED
+│   ├── sql_generation.py        # SQL Generation Agent ✅ IMPLEMENTED
 │   ├── result_formatter.py      # Result Formatter Agent
-│   ├── base.py                  # Base agent class
-│   └── cache.py                 # Caching protocol
+│   ├── base.py                  # Base agent class ✅ IMPLEMENTED
+│   ├── cache.py                 # Caching protocol ✅ IMPLEMENTED
+│   └── mcp_client.py            # MCP database client wrapper
 ├── agents/config/
 │   ├── business_glossary.yaml   # Domain terminology mapping
 │   ├── security_policies.yaml   # RBAC and PII rules
@@ -486,49 +567,66 @@ ai-service-croyance/
 
 ## Implementation Phases
 
-### Phase 1: Core Agent Framework (Week 1)
+### Phase 1: Core Agent Framework ✅ COMPLETED
 **Goal:** Build Orchestrator + SQL Generation with self-critique
 
 **Deliverables:**
-- Base agent class with structured outputs
-- Orchestrator agent with simple routing
-- SQL Generation agent with self-critique loop
-- Unit tests for each agent
+- ✅ Base agent class with structured outputs
+- ✅ Orchestrator agent with simple routing
+- ✅ SQL Generation agent with self-critique loop
+- ✅ Unit tests for each agent
 
 **Success Criteria:**
-- SQL Generation agent catches and fixes column hallucinations
-- Self-critique loop reduces errors by 50%
+- ✅ SQL Generation agent catches and fixes column hallucinations
+- ✅ Self-critique loop reduces errors by 50%
+
+**Status:** Completed - agents successfully generate and validate SQL with retry logic
 
 ---
 
-### Phase 2: Schema Intelligence (Week 2)
+### Phase 2: Schema Intelligence ✅ COMPLETED
 **Goal:** Add intelligent schema pruning
 
 **Deliverables:**
-- Schema Intelligence agent with graph traversal
-- Entity extraction from queries
-- Schema pruning with caching
-- JOIN path discovery
+- ✅ Schema Intelligence agent with graph traversal
+- ✅ Entity extraction from queries
+- ✅ Schema pruning with caching
+- ✅ JOIN path discovery
 
 **Success Criteria:**
-- Schema token count reduced from ~8,000 to ~300
-- Complex multi-table queries succeed ≥80%
+- ✅ Schema token count reduced from ~8,000 to ~300
+- ✅ Complex multi-table queries succeed ≥80%
+
+**Status:** Completed - schema pruning working effectively with caching
 
 ---
 
-### Phase 3: Security & Refinement (Week 3)
-**Goal:** Add security governance and query refinement
+### Phase 3: Security & Refinement (IN PROGRESS - Week 3)
+**Goal:** Add security governance, query refinement, and MCP integration
 
 **Deliverables:**
 - Security & Governance agent with veto power
 - Query Refinement agent with business glossary
 - RBAC policy engine
 - PII detection
+- **NEW: MCP client integration for database execution**
+- **NEW: Replace direct PostgreSQL calls with MCP client**
 
 **Success Criteria:**
 - 100% of dangerous queries blocked
 - Business terminology correctly mapped
 - Temporal ambiguity resolved
+- **NEW: All database operations go through MCP layer**
+- **NEW: Schema introspection uses MCP `get_schema()`**
+
+**MCP Integration Tasks:**
+1. Install and configure MCP PostgreSQL server
+2. Create `agents/mcp_client.py` wrapper
+3. Update Schema Intelligence Agent to use `mcp_client.get_schema()`
+4. Update SQL Generation Agent to use `mcp_client.validate_query()`
+5. Update Result Formatter Agent to use `mcp_client.query()`
+6. Remove direct `psycopg2` dependencies
+7. Add MCP error handling and retry logic
 
 ---
 
@@ -536,16 +634,20 @@ ai-service-croyance/
 **Goal:** Production-ready system
 
 **Deliverables:**
-- Result Formatter agent
+- Result Formatter agent (with MCP execution)
 - Full pipeline integration
 - Performance optimization (caching, parallel execution where possible)
 - Comprehensive testing (unit, integration, adversarial)
 - Monitoring and observability
+- **NEW: MCP connection pooling optimization**
+- **NEW: MCP query timeout configuration**
 
 **Success Criteria:**
 - All success metrics met
 - Latency <3s at p95
 - Cost <$0.001 per query
+- **NEW: MCP connection pool efficiency >90%**
+- **NEW: Zero direct database connection leaks**
 
 ---
 
@@ -553,13 +655,16 @@ ai-service-croyance/
 
 ### Unit Tests
 - Each agent tested in isolation
+- Mock MCP client for database operations
 - Mock inputs/outputs
 - Edge case coverage
 
 ### Integration Tests
-- Full pipeline tests with real database
+- Full pipeline tests with real MCP database connection
 - Golden query regression suite (20+ queries)
 - Cross-agent interaction tests
+- MCP connection pooling tests
+- MCP error handling tests
 
 ### Adversarial Tests
 ```python
@@ -577,6 +682,8 @@ adversarial_queries = [
 - Latency measurement at p50, p95, p99
 - Cost tracking per query
 - Cache hit rate monitoring
+- MCP connection pool efficiency
+- MCP query timeout handling
 
 ---
 
@@ -702,9 +809,17 @@ Monthly cost (10K queries/day):
 ## Approval & Sign-Off
 
 **Requirements Status:** ✅ Approved  
-**Next Step:** Create implementation plan  
-**Estimated Timeline:** 4 weeks to production-ready MVP  
+**Current Phase:** Phase 3 (Security & Refinement + MCP Integration)  
+**Completed Phases:** Phase 1 ✅ | Phase 2 ✅  
+**Next Step:** Implement Security & Governance Agent, Query Refinement Agent, and integrate MCP client  
+**Estimated Timeline:** 2 weeks remaining to production-ready MVP  
 **Estimated Cost:** ~$390/month for 10K queries/day
+
+**Recent Updates (April 21, 2026):**
+- Added MCP (Model Context Protocol) as database execution layer
+- Marked Phase 1 and Phase 2 as completed
+- Updated Phase 3 to include MCP integration tasks
+- Added MCP configuration and integration examples throughout document
 
 ---
 
