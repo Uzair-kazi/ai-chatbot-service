@@ -22,6 +22,8 @@ Key features:
 import re
 import time
 import hashlib
+import yaml
+import os
 from typing import Dict, List, Set, Tuple, Optional
 from collections import deque
 from difflib import SequenceMatcher
@@ -85,6 +87,10 @@ class SchemaIntelligenceAgent(BaseAgent):
         super().__init__(name="SchemaIntelligenceAgent")
         self.cache = default_cache
         self.mcp_client = MCPClient()
+        
+        # Load business glossary for domain-specific entity extraction
+        self.business_glossary = self._load_business_glossary()
+        
         self.logger.info("Schema Intelligence agent initialized with MCP client and caching")
     
     def execute(self, request: SchemaIntelligenceRequest) -> SchemaIntelligenceResponse:
@@ -405,23 +411,118 @@ class SchemaIntelligenceAgent(BaseAgent):
     
     def _extract_entities_fallback(self, question: str) -> Set[str]:
         """
-        Extract entities using regex-based approach.
+        Extract entities using enhanced regex-based approach with n-grams and business glossary.
         
-        Uses simple regex-based extraction with stopword filtering.
+        Enhanced in Unit 1 to handle:
+        - Multi-word phrases (n-grams): "ISO tanks", "service tank", "vehicle in"
+        - Business glossary terms: domain-specific terminology
+        - Improved stopword filtering that preserves domain terms
         
         Args:
             question: Natural language question
             
         Returns:
-            Set of extracted entities (lowercased)
+            Set of extracted entities (lowercased, includes multi-word phrases)
         """
-        # Extract words (alphanumeric sequences)
-        words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9_]*\b', question.lower())
+        entities = set()
+        question_lower = question.lower()
         
-        # Filter stopwords
-        entities = {word for word in words if word not in self.STOPWORDS}
+        # Step 1: Extract business glossary terms first (highest priority)
+        if self.business_glossary:
+            for term in self.business_glossary.get('entity_mappings', {}):
+                if term in question_lower:
+                    entities.add(term)
+                    self.logger.debug(f"Found business glossary term: {term}")
         
+        # Step 2: Extract n-grams (multi-word phrases)
+        words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9_]*\b', question_lower)
+        
+        # Extract bigrams (2-word phrases) - be selective
+        for i in range(len(words) - 1):
+            word1, word2 = words[i], words[i+1]
+            bigram = f"{word1} {word2}"
+            
+            # Only include bigrams that are domain-relevant
+            if self._is_domain_relevant(bigram):
+                entities.add(bigram)
+                self.logger.debug(f"Extracted domain-relevant bigram: {bigram}")
+        
+        # Extract trigrams (3-word phrases) - more selective
+        for i in range(len(words) - 2):
+            word1, word2, word3 = words[i], words[i+1], words[i+2]
+            trigram = f"{word1} {word2} {word3}"
+            
+            # Only include trigrams that are clearly domain-relevant
+            if self._is_domain_relevant(trigram):
+                entities.add(trigram)
+                self.logger.debug(f"Extracted trigram: {trigram}")
+        
+        # Step 3: Extract individual words (existing logic, enhanced)
+        for word in words:
+            if word not in self.STOPWORDS or self._is_domain_term(word):
+                entities.add(word)
+        
+        self.logger.info(f"Enhanced entity extraction found {len(entities)} entities: {entities}")
         return entities
+    
+    def _load_business_glossary(self) -> Optional[Dict]:
+        """
+        Load business glossary from YAML configuration file.
+        
+        Returns:
+            Dictionary with business glossary terms or None if file not found
+        """
+        try:
+            glossary_path = os.path.join(
+                os.path.dirname(__file__), 
+                'config', 
+                'business_glossary.yaml'
+            )
+            
+            if os.path.exists(glossary_path):
+                with open(glossary_path, 'r') as f:
+                    glossary = yaml.safe_load(f)
+                    self.logger.info(f"Loaded business glossary with {len(glossary.get('entity_mappings', {}))} entity mappings")
+                    return glossary
+            else:
+                self.logger.warning(f"Business glossary not found at {glossary_path}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Failed to load business glossary: {e}")
+            return None
+    
+    def _is_domain_relevant(self, phrase: str) -> bool:
+        """
+        Check if a phrase is domain-relevant based on keywords.
+        
+        Args:
+            phrase: Multi-word phrase to check
+            
+        Returns:
+            True if phrase contains domain-relevant terms
+        """
+        domain_keywords = {
+            'iso', 'tank', 'tanks', 'service', 'vehicle', 'client', 'survey', 
+            'status', 'in', 'out', 'croyance', 'form', 'number'
+        }
+        
+        phrase_words = phrase.split()
+        return any(word in domain_keywords for word in phrase_words)
+    
+    def _is_domain_term(self, word: str) -> bool:
+        """
+        Check if a single word is a domain-specific term that should be preserved.
+        
+        Args:
+            word: Single word to check
+            
+        Returns:
+            True if word is domain-specific and should be kept despite being in stopwords
+        """
+        # Domain-specific terms that might be in stopwords but are important
+        domain_terms = {'in', 'out', 'is', 'are', 'has', 'have'}
+        return word in domain_terms
     
     def _match_entities_to_tables(
         self,

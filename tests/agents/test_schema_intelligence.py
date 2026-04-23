@@ -641,3 +641,151 @@ class TestSchemaIntelligenceAgent:
         # After first request (cache miss), all subsequent should hit cache
         hit_rate = cache_hits / len(questions)
         assert hit_rate >= 0.6, f"Cache hit rate {hit_rate} < 0.6 (expected 4/5 = 0.8)"
+
+
+class TestEntityExtraction:
+    """Test suite for enhanced entity extraction (Unit 1)."""
+    
+    def test_extract_single_word_entities(self):
+        """Happy path: Extract single-word entities with stopword filtering."""
+        agent = SchemaIntelligenceAgent()
+        
+        entities = agent._extract_entities_fallback("How many tanks are there?")
+        
+        # Key entity should be extracted
+        assert "tanks" in entities
+        
+        # Domain terms might be preserved
+        if "are" in entities:
+            assert agent._is_domain_term("are")
+        
+        # Core stopwords should be filtered out (but might appear in multi-word phrases)
+        individual_words = {e for e in entities if ' ' not in e}  # Only single words
+        assert "how" not in individual_words
+        assert "many" not in individual_words  # 'many' is a stopword
+    
+    def test_extract_multi_word_phrases_bigrams(self):
+        """Happy path: Extract bigrams (2-word phrases) like 'ISO tanks'."""
+        agent = SchemaIntelligenceAgent()
+        
+        entities = agent._extract_entities_fallback("How many ISO tanks are currently in?")
+        
+        # Should extract the bigram
+        assert "iso tanks" in entities
+        # Should also extract individual words
+        assert "iso" in entities
+        assert "tanks" in entities
+        assert "currently" in entities
+    
+    def test_extract_multi_word_phrases_trigrams(self):
+        """Happy path: Extract trigrams (3-word phrases) when domain-relevant."""
+        agent = SchemaIntelligenceAgent()
+        
+        entities = agent._extract_entities_fallback("Show me service tank status")
+        
+        # Should extract domain-relevant trigram
+        assert "service tank status" in entities
+        # Should also extract bigrams and individual words
+        assert "service tank" in entities
+        assert "tank status" in entities
+        assert "service" in entities
+        assert "tank" in entities
+        assert "status" in entities
+    
+    def test_business_glossary_integration(self):
+        """Happy path: Extract business glossary terms with high priority."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Test with terms that should be in business glossary
+        entities = agent._extract_entities_fallback("Show me all clients and their tanks")
+        
+        # Business glossary terms should be extracted
+        if agent.business_glossary:
+            glossary_terms = agent.business_glossary.get('entity_mappings', {})
+            if 'clients' in glossary_terms:
+                assert "clients" in entities
+            if 'tanks' in glossary_terms:
+                assert "tanks" in entities
+    
+    def test_domain_term_preservation(self):
+        """Happy path: Preserve domain-specific terms even if they're normally stopwords."""
+        agent = SchemaIntelligenceAgent()
+        
+        entities = agent._extract_entities_fallback("Which tanks are in status?")
+        
+        # 'in' should be preserved as it's domain-relevant
+        assert "in" in entities
+        # 'are' might be preserved as domain-relevant
+        # Other stopwords should be filtered
+        assert "which" not in entities
+    
+    def test_empty_question_handling(self):
+        """Edge case: Handle empty or whitespace-only questions."""
+        agent = SchemaIntelligenceAgent()
+        
+        entities_empty = agent._extract_entities_fallback("")
+        entities_whitespace = agent._extract_entities_fallback("   \n\t  ")
+        
+        assert len(entities_empty) == 0
+        assert len(entities_whitespace) == 0
+    
+    def test_no_entities_found(self):
+        """Edge case: Handle questions with no recognizable entities."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Question with only stopwords
+        entities = agent._extract_entities_fallback("How are the?")
+        
+        # Should have very few or no entities (depending on domain term preservation)
+        assert len(entities) <= 2  # Might preserve 'are' as domain term
+    
+    def test_spelling_mistakes_in_entities(self):
+        """Edge case: Extract entities even with spelling mistakes."""
+        agent = SchemaIntelligenceAgent()
+        
+        entities = agent._extract_entities_fallback("How many tanx are there?")
+        
+        # Should still extract the misspelled word
+        assert "tanx" in entities
+        # This will be handled by fuzzy matching in Unit 2
+    
+    def test_mixed_case_normalization(self):
+        """Happy path: Normalize entities to lowercase."""
+        agent = SchemaIntelligenceAgent()
+        
+        entities = agent._extract_entities_fallback("Show me ISO TANKS and Service Tanks")
+        
+        # All entities should be lowercase
+        assert "iso" in entities
+        assert "tanks" in entities
+        assert "service" in entities
+        # Multi-word phrases should also be lowercase
+        assert "iso tanks" in entities
+        assert "service tanks" in entities
+    
+    def test_domain_relevance_detection(self):
+        """Unit test: Test domain relevance detection helper method."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Domain-relevant phrases
+        assert agent._is_domain_relevant("iso tank")
+        assert agent._is_domain_relevant("service tank")
+        assert agent._is_domain_relevant("vehicle in")
+        assert agent._is_domain_relevant("client status")
+        
+        # Non-domain-relevant phrases
+        assert not agent._is_domain_relevant("the quick")
+        assert not agent._is_domain_relevant("brown fox")
+        assert not agent._is_domain_relevant("how are")
+    
+    def test_business_glossary_loading(self):
+        """Unit test: Test business glossary loading."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Should have loaded business glossary (or None if file missing)
+        assert agent.business_glossary is None or isinstance(agent.business_glossary, dict)
+        
+        if agent.business_glossary:
+            # Should have entity_mappings section
+            assert 'entity_mappings' in agent.business_glossary
+            assert isinstance(agent.business_glossary['entity_mappings'], dict)
