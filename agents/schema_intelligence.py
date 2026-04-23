@@ -30,6 +30,7 @@ from difflib import SequenceMatcher
 
 from agents.base import BaseAgent, AgentExecutionError, AgentValidationError
 from agents.mcp_client import MCPClient
+from agents.embeddings import get_embedding_matcher
 from agents.models.schema_models import (
     SchemaIntelligenceRequest,
     SchemaIntelligenceResponse,
@@ -532,13 +533,15 @@ class SchemaIntelligenceAgent(BaseAgent):
         threshold: float
     ) -> List[EntityMatch]:
         """
-        Match entities to database tables using fuzzy matching.
+        Match entities to database tables using hybrid embedding + fuzzy matching.
         
-        Phase 3: Uses existing fuzzy matching with potential for future MCP enhancement.
-        The MCP client is primarily used for database operations, not semantic matching.
+        Enhanced in Unit 2 to use:
+        1. Embedding-based semantic similarity (primary)
+        2. Fuzzy matching fallback (for spelling mistakes and when embeddings unavailable)
+        3. Best match selection from both approaches
         
         Matches entities against:
-        1. Table names (exact and fuzzy)
+        1. Table names (exact, embedding, and fuzzy)
         2. Column names (for semantic columns like croyance_client_name)
         
         Args:
@@ -550,8 +553,120 @@ class SchemaIntelligenceAgent(BaseAgent):
         Returns:
             List of EntityMatch objects
         """
-        # Use fuzzy matching (reliable and fast)
-        return self._match_entities_fallback(entities, tables, schema, threshold)
+        # Try embedding-based matching first, fallback to fuzzy matching
+        embedding_matcher = get_embedding_matcher()
+        
+        if embedding_matcher.is_available():
+            self.logger.info("Using embedding-based entity matching with fuzzy fallback")
+            return self._match_entities_with_embeddings(entities, tables, schema, threshold)
+        else:
+            self.logger.info("Embedding model unavailable, using fuzzy matching only")
+            return self._match_entities_fallback(entities, tables, schema, threshold)
+    
+    def _match_entities_with_embeddings(
+        self,
+        entities: Set[str],
+        tables: Set[str],
+        schema: str,
+        threshold: float
+    ) -> List[EntityMatch]:
+        """
+        Match entities using embeddings with fuzzy matching fallback.
+        
+        Args:
+            entities: Set of extracted entities
+            tables: Set of table names from schema
+            schema: Full schema string (for column name extraction)
+            threshold: Minimum similarity score (0.0-1.0)
+            
+        Returns:
+            List of EntityMatch objects
+        """
+        matches = []
+        embedding_matcher = get_embedding_matcher()
+        
+        # Parse schema to get columns
+        table_columns = self._parse_schema_columns(schema)
+        
+        for entity in entities:
+            entity_matches = []
+            
+            # Step 1: Try exact match first (case-insensitive)
+            for table in tables:
+                if entity == table.lower():
+                    entity_matches.append(EntityMatch(
+                        entity=entity,
+                        table=table,
+                        similarity=1.0,
+                        match_type="exact_table"
+                    ))
+            
+            # Step 2: Try embedding-based matching on table names
+            for table in tables:
+                embedding_similarity = embedding_matcher.calculate_similarity(entity, table.lower())
+                if embedding_similarity is not None and embedding_similarity >= threshold:
+                    entity_matches.append(EntityMatch(
+                        entity=entity,
+                        table=table,
+                        similarity=embedding_similarity,
+                        match_type="embedding_table"
+                    ))
+            
+            # Step 3: Try fuzzy matching on table names (for spelling mistakes)
+            for table in tables:
+                fuzzy_similarity = self._calculate_similarity(entity, table.lower())
+                if fuzzy_similarity >= threshold:
+                    entity_matches.append(EntityMatch(
+                        entity=entity,
+                        table=table,
+                        similarity=fuzzy_similarity,
+                        match_type="fuzzy_table"
+                    ))
+            
+            # Step 4: Try matching on column names (embedding + fuzzy)
+            column_threshold = max(threshold - 0.1, 0.5)  # More lenient for columns
+            for table, columns in table_columns.items():
+                for column in columns:
+                    # Substring match (highest priority for columns)
+                    if entity in column.lower():
+                        entity_matches.append(EntityMatch(
+                            entity=entity,
+                            table=table,
+                            similarity=0.8,  # High similarity for substring match
+                            match_type="substring_column"
+                        ))
+                    else:
+                        # Try embedding similarity on column
+                        embedding_similarity = embedding_matcher.calculate_similarity(entity, column.lower())
+                        if embedding_similarity is not None and embedding_similarity >= column_threshold:
+                            entity_matches.append(EntityMatch(
+                                entity=entity,
+                                table=table,
+                                similarity=embedding_similarity,
+                                match_type="embedding_column"
+                            ))
+                        
+                        # Try fuzzy similarity on column
+                        fuzzy_similarity = self._calculate_similarity(entity, column.lower())
+                        if fuzzy_similarity >= column_threshold:
+                            entity_matches.append(EntityMatch(
+                                entity=entity,
+                                table=table,
+                                similarity=fuzzy_similarity,
+                                match_type="fuzzy_column"
+                            ))
+            
+            # Add all matches for this entity
+            matches.extend(entity_matches)
+        
+        # Remove duplicates (keep highest similarity for each entity-table pair)
+        unique_matches = {}
+        for match in matches:
+            key = (match.entity, match.table)
+            if key not in unique_matches or match.similarity > unique_matches[key].similarity:
+                unique_matches[key] = match
+        
+        return list(unique_matches.values())
     
     def _match_entities_fallback(
         self,

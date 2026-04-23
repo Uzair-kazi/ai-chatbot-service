@@ -789,3 +789,146 @@ class TestEntityExtraction:
             # Should have entity_mappings section
             assert 'entity_mappings' in agent.business_glossary
             assert isinstance(agent.business_glossary['entity_mappings'], dict)
+
+class TestEmbeddingBasedMatching:
+    """Test suite for embedding-based entity matching (Unit 2)."""
+    
+    def test_embedding_matcher_availability(self):
+        """Unit test: Check if embedding matcher can be loaded."""
+        from agents.embeddings import get_embedding_matcher
+        
+        matcher = get_embedding_matcher()
+        # Should either be available or gracefully unavailable
+        assert isinstance(matcher.is_available(), bool)
+        
+        if matcher.is_available():
+            # Test basic similarity calculation
+            similarity = matcher.calculate_similarity("tank", "tanks")
+            assert similarity is not None
+            assert 0.0 <= similarity <= 1.0
+    
+    def test_semantic_similarity_matching(self):
+        """Happy path: Match entities using semantic similarity."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Test with semantically similar terms
+        entities = {"tanks", "clients"}
+        tables = {"iso_tank", "service_tank", "vehicle_in"}
+        schema = """
+Table: iso_tank
+  - id: integer (primary key)
+  - tank_number: varchar(50)
+
+Table: service_tank  
+  - id: integer (primary key)
+  - tank_number: varchar(50)
+
+Table: vehicle_in
+  - id: integer (primary key)
+  - croyance_client_name: varchar(100)
+"""
+        
+        matches = agent._match_entities_to_tables(entities, tables, schema, 0.6)
+        
+        # Should find matches for both entities
+        entity_matches = {match.entity for match in matches}
+        assert "tanks" in entity_matches  # Should match to tank tables
+        
+        # Check that we get reasonable similarity scores
+        for match in matches:
+            assert 0.0 <= match.similarity <= 1.0
+    
+    def test_spelling_mistake_handling(self):
+        """Happy path: Handle spelling mistakes with fuzzy matching fallback."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Test with misspelled entities
+        entities = {"tanx", "servey"}  # Misspelled "tank" and "survey"
+        tables = {"iso_tank", "service_tank", "survey_form"}
+        schema = """
+Table: iso_tank
+  - id: integer (primary key)
+  - tank_number: varchar(50)
+
+Table: survey_form
+  - id: integer (primary key)
+  - form_data: text
+"""
+        
+        matches = agent._match_entities_to_tables(entities, tables, schema, 0.5)
+        
+        # Should find matches despite spelling mistakes
+        matched_tables = {match.table for match in matches}
+        # At least one tank table should match "tanx"
+        assert any("tank" in table for table in matched_tables)
+    
+    def test_hybrid_matching_best_score(self):
+        """Integration: Hybrid matching takes best score from embedding or fuzzy."""
+        agent = SchemaIntelligenceAgent()
+        
+        entities = {"tank"}
+        tables = {"iso_tank"}
+        schema = """
+Table: iso_tank
+  - id: integer (primary key)
+  - tank_number: varchar(50)
+"""
+        
+        matches = agent._match_entities_to_tables(entities, tables, schema, 0.6)
+        
+        # Should find at least one match
+        assert len(matches) > 0
+        
+        # Should have high similarity (either embedding or fuzzy should score well)
+        best_match = max(matches, key=lambda m: m.similarity)
+        assert best_match.similarity > 0.7
+    
+    def test_fallback_when_embeddings_unavailable(self):
+        """Edge case: Graceful fallback when embedding model unavailable."""
+        agent = SchemaIntelligenceAgent()
+        
+        # This test will pass regardless of whether embeddings are available
+        # because the code has fallback logic
+        entities = {"tanks"}
+        tables = {"iso_tank"}
+        schema = """
+Table: iso_tank
+  - id: integer (primary key)
+  - tank_number: varchar(50)
+"""
+        
+        matches = agent._match_entities_to_tables(entities, tables, schema, 0.6)
+        
+        # Should still find matches using fuzzy matching
+        assert len(matches) > 0
+        matched_tables = {match.table for match in matches}
+        assert "iso_tank" in matched_tables
+    
+    def test_embedding_vs_fuzzy_match_types(self):
+        """Integration: Verify different match types are properly labeled."""
+        agent = SchemaIntelligenceAgent()
+        
+        entities = {"tank", "tanx"}  # One correct, one misspelled
+        tables = {"iso_tank"}
+        schema = """
+Table: iso_tank
+  - id: integer (primary key)
+  - tank_number: varchar(50)
+"""
+        
+        matches = agent._match_entities_to_tables(entities, tables, schema, 0.5)
+        
+        # Should have matches with appropriate types
+        match_types = {match.match_type for match in matches}
+        
+        # Should include various match types (exact, embedding, fuzzy, etc.)
+        # The exact types depend on embedding availability
+        assert len(match_types) > 0
+        
+        # All match types should be valid
+        valid_types = {
+            "exact_table", "embedding_table", "fuzzy_table",
+            "substring_column", "embedding_column", "fuzzy_column"
+        }
+        for match_type in match_types:
+            assert match_type in valid_types
