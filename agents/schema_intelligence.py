@@ -193,11 +193,11 @@ class SchemaIntelligenceAgent(BaseAgent):
                     }
                 )
             
-            # Step 5: Traverse graph to find related tables
+            # Step 5: Traverse graph to find related tables (aggressive pruning)
             selected_tables, join_hints = self._traverse_graph(
                 graph,
                 matched_tables,
-                request.max_depth
+                1  # Aggressive pruning: only direct relationships (max_depth=1)
             )
             self.logger.info(f"Selected {len(selected_tables)} tables via graph traversal")
             
@@ -878,10 +878,15 @@ class SchemaIntelligenceAgent(BaseAgent):
         """
         Traverse foreign key graph using BFS to find related tables.
         
+        Enhanced in Unit 3 for aggressive pruning:
+        - Only traverse to max_depth=1 (direct relationships only)
+        - Prioritize matched tables over discovered tables
+        - Limit total tables to prevent overwhelming SQL agent
+        
         Args:
             graph: SchemaGraph with adjacency list
             start_tables: Set of tables to start traversal from
-            max_depth: Maximum traversal depth
+            max_depth: Maximum traversal depth (should be 1 for aggressive pruning)
             
         Returns:
             Tuple of (selected_tables, join_hints)
@@ -890,12 +895,12 @@ class SchemaIntelligenceAgent(BaseAgent):
         join_hints = []
         queue = deque()
         
-        # Initialize queue with start tables
+        # Initialize queue with start tables (matched tables have priority)
         for table in start_tables:
             if table in graph.adjacency_list:
                 queue.append((table, 0))
         
-        # BFS traversal
+        # BFS traversal with aggressive pruning
         while queue:
             table, depth = queue.popleft()
             
@@ -905,8 +910,8 @@ class SchemaIntelligenceAgent(BaseAgent):
             
             visited.add(table)
             
-            # Explore neighbors (foreign key relationships)
-            if table in graph.adjacency_list:
+            # For aggressive pruning, only explore direct relationships (depth 0 -> 1)
+            if depth < max_depth and table in graph.adjacency_list:
                 for fk_column, (target_table, target_column) in graph.adjacency_list[table].items():
                     # Skip reverse relationships (marked with _reverse_ prefix)
                     if fk_column.startswith('_reverse_'):
@@ -936,7 +941,32 @@ class SchemaIntelligenceAgent(BaseAgent):
                     if target_table not in visited:
                         queue.append((target_table, depth + 1))
         
-        return list(visited), join_hints
+        # Aggressive pruning: limit total tables to prevent overwhelming SQL agent
+        selected_tables = list(visited)
+        
+        # If we have too many tables, prioritize matched tables (start_tables)
+        if len(selected_tables) > 5:  # Aggressive limit
+            # Keep all matched tables + most connected related tables
+            matched_tables = [t for t in selected_tables if t in start_tables]
+            related_tables = [t for t in selected_tables if t not in start_tables]
+            
+            # Sort related tables by number of connections (more connected = more important)
+            table_connections = {}
+            for table in related_tables:
+                connections = 0
+                if table in graph.adjacency_list:
+                    connections = len(graph.adjacency_list[table])
+                table_connections[table] = connections
+            
+            related_tables.sort(key=lambda t: table_connections.get(t, 0), reverse=True)
+            
+            # Keep matched tables + top related tables (max 5 total)
+            max_related = max(0, 5 - len(matched_tables))
+            selected_tables = matched_tables + related_tables[:max_related]
+            
+            self.logger.info(f"Aggressive pruning: reduced from {len(visited)} to {len(selected_tables)} tables")
+        
+        return selected_tables, join_hints
     
     def _prune_schema(
         self,
@@ -945,7 +975,64 @@ class SchemaIntelligenceAgent(BaseAgent):
         join_hints: List[JoinHint]
     ) -> PrunedSchema:
         """
-        Prune schema to include only selected tables.
+        Prune schema to include only selected tables with validation.
+        
+        Enhanced in Unit 3 with:
+        - Token count validation (<500 tokens)
+        - Fallback to top common tables if pruning fails
+        - Aggressive pruning for better SQL generation
+        
+        Args:
+            full_schema: Complete schema string
+            selected_tables: List of tables to include
+            join_hints: List of JOIN path hints
+            
+        Returns:
+            PrunedSchema with formatted schema text and metadata
+        """
+        # First attempt: prune with selected tables
+        pruned_schema = self._build_pruned_schema_text(full_schema, selected_tables, join_hints)
+        
+        # Validate token count
+        if pruned_schema.token_count <= 500:
+            self.logger.info(f"Schema pruning successful: {pruned_schema.token_count} tokens ({pruned_schema.reduction_percentage:.1f}% reduction)")
+            return pruned_schema
+        
+        # Token count too high - try more aggressive pruning
+        self.logger.warning(f"Pruned schema too large ({pruned_schema.token_count} tokens), applying aggressive pruning")
+        
+        # Strategy 1: Remove JOIN hints to save tokens
+        if join_hints:
+            pruned_schema_no_hints = self._build_pruned_schema_text(full_schema, selected_tables, [])
+            if pruned_schema_no_hints.token_count <= 500:
+                self.logger.info(f"Aggressive pruning successful (no JOIN hints): {pruned_schema_no_hints.token_count} tokens")
+                return pruned_schema_no_hints
+        
+        # Strategy 2: Reduce to top 3 tables by confidence/importance
+        if len(selected_tables) > 3:
+            # Keep top 3 tables (prioritize by order - matched tables come first)
+            top_tables = selected_tables[:3]
+            pruned_schema_top3 = self._build_pruned_schema_text(full_schema, top_tables, [])
+            if pruned_schema_top3.token_count <= 500:
+                self.logger.info(f"Aggressive pruning successful (top 3 tables): {pruned_schema_top3.token_count} tokens")
+                return pruned_schema_top3
+        
+        # Strategy 3: Fallback to most common tables
+        self.logger.warning("All pruning strategies failed, falling back to common tables")
+        common_tables = self._get_common_tables(full_schema)
+        fallback_schema = self._build_pruned_schema_text(full_schema, common_tables, [])
+        
+        self.logger.info(f"Fallback schema: {fallback_schema.token_count} tokens with tables {common_tables}")
+        return fallback_schema
+    
+    def _build_pruned_schema_text(
+        self,
+        full_schema: str,
+        selected_tables: List[str],
+        join_hints: List[JoinHint]
+    ) -> PrunedSchema:
+        """
+        Build pruned schema text from selected tables.
         
         Args:
             full_schema: Complete schema string
@@ -992,7 +1079,7 @@ class SchemaIntelligenceAgent(BaseAgent):
             if include_table and in_table_section:
                 pruned_lines.append(line)
         
-        # Add JOIN hints section
+        # Add JOIN hints section (if provided)
         if join_hints:
             pruned_lines.append("")
             pruned_lines.append("JOIN Path Hints:")
@@ -1002,7 +1089,7 @@ class SchemaIntelligenceAgent(BaseAgent):
         
         pruned_schema_text = '\n'.join(pruned_lines)
         
-        # Estimate token counts (rough approximation: 1 token ≈ 4 characters)
+        # Calculate token counts (rough approximation: 1 token ≈ 4 characters)
         original_token_count = len(full_schema) // 4
         pruned_token_count = len(pruned_schema_text) // 4
         reduction_percentage = ((original_token_count - pruned_token_count) / original_token_count * 100) if original_token_count > 0 else 0
@@ -1015,6 +1102,53 @@ class SchemaIntelligenceAgent(BaseAgent):
             original_token_count=original_token_count,
             reduction_percentage=reduction_percentage
         )
+    
+    def _get_common_tables(self, full_schema: str) -> List[str]:
+        """
+        Get list of most common/important tables as fallback.
+        
+        Uses heuristics to identify important tables:
+        - Tables with common business names (tank, client, vehicle, etc.)
+        - Tables that appear early in schema (often more important)
+        
+        Args:
+            full_schema: Complete schema string
+            
+        Returns:
+            List of up to 5 common table names
+        """
+        # Extract all table names
+        tables = []
+        for line in full_schema.split('\n'):
+            table_match = re.match(r'^Table:\s+(\w+)', line, re.IGNORECASE)
+            if table_match:
+                tables.append(table_match.group(1))
+        
+        # Priority keywords for business importance
+        priority_keywords = ['tank', 'client', 'vehicle', 'user', 'order', 'product', 'service']
+        
+        # Score tables by importance
+        table_scores = {}
+        for i, table in enumerate(tables):
+            score = 0
+            
+            # Earlier tables get higher score (often more important)
+            score += (len(tables) - i) * 0.1
+            
+            # Tables with priority keywords get higher score
+            table_lower = table.lower()
+            for keyword in priority_keywords:
+                if keyword in table_lower:
+                    score += 10
+            
+            table_scores[table] = score
+        
+        # Sort by score and return top 5
+        sorted_tables = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)
+        common_tables = [table for table, score in sorted_tables[:5]]
+        
+        self.logger.info(f"Common tables fallback: {common_tables}")
+        return common_tables
     
     def _generate_cache_key(self, entities: Set[str]) -> str:
         """

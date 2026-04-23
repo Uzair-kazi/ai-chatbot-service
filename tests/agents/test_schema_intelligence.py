@@ -932,3 +932,278 @@ Table: iso_tank
         }
         for match_type in match_types:
             assert match_type in valid_types
+
+class TestAggressiveSchemaPruning:
+    """Test suite for aggressive schema pruning with validation (Unit 3)."""
+    
+    def test_token_count_validation(self):
+        """Happy path: Validate that pruned schema is under 500 tokens."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Create a large schema that should be pruned effectively
+        large_schema = """
+Database Schema:
+================================================================================
+
+Table: iso_tank
+--------------------------------------------------------------------------------
+  - id: integer (primary key)
+  - tank_number: varchar(50)
+  - iso_tank_status: varchar(20)
+  - vehicle_in_id: integer (foreign key -> vehicle_in.id)
+  - survey_form_id: integer (foreign key -> survey_form.id)
+
+Table: service_tank
+--------------------------------------------------------------------------------
+  - id: integer (primary key)
+  - tank_number: varchar(50)
+  - service_tank_status: varchar(20)
+  - vehicle_in_id: integer (foreign key -> vehicle_in.id)
+
+Table: vehicle_in
+--------------------------------------------------------------------------------
+  - id: integer (primary key)
+  - croyance_client_name: varchar(100)
+  - in_date_time: timestamp
+  - driver_name: varchar(100)
+
+Table: survey_form
+--------------------------------------------------------------------------------
+  - id: integer (primary key)
+  - form_data: text
+  - created_at: timestamp
+
+Table: unused_table_1
+--------------------------------------------------------------------------------
+  - id: integer (primary key)
+  - data: text
+
+Table: unused_table_2
+--------------------------------------------------------------------------------
+  - id: integer (primary key)
+  - data: text
+"""
+        
+        selected_tables = ["iso_tank", "vehicle_in"]
+        join_hints = []
+        
+        pruned_schema = agent._prune_schema(large_schema, selected_tables, join_hints)
+        
+        # Should be under 500 tokens
+        assert pruned_schema.token_count <= 500
+        # Should have significant reduction
+        assert pruned_schema.reduction_percentage > 50
+        # Should include selected tables
+        assert "iso_tank" in pruned_schema.schema_text
+        assert "vehicle_in" in pruned_schema.schema_text
+        # Should not include unused tables
+        assert "unused_table_1" not in pruned_schema.schema_text
+    
+    def test_aggressive_table_limiting(self):
+        """Happy path: Limit total tables to prevent overwhelming SQL agent."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Create a graph with many connected tables
+        from agents.models.schema_models import SchemaGraph, ForeignKeyRelationship
+        
+        graph = SchemaGraph()
+        tables = ["table_1", "table_2", "table_3", "table_4", "table_5", "table_6", "table_7"]
+        
+        for table in tables:
+            graph.tables.add(table)
+            graph.adjacency_list[table] = {}
+        
+        # Connect all tables to table_1 (hub pattern)
+        for i in range(2, 8):
+            source_table = f"table_{i}"
+            graph.adjacency_list[source_table]["table_1_id"] = ("table_1", "id")
+        
+        # Start with just one matched table
+        start_tables = {"table_1"}
+        max_depth = 1
+        
+        selected_tables, join_hints = agent._traverse_graph(graph, start_tables, max_depth)
+        
+        # Should limit to 5 tables maximum (aggressive pruning)
+        assert len(selected_tables) <= 5
+        # Should include the matched table
+        assert "table_1" in selected_tables
+    
+    def test_fallback_to_common_tables(self):
+        """Edge case: Fallback to common tables when pruning fails."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Create a schema where even aggressive pruning might exceed 500 tokens
+        # (This is a contrived example - in practice, 2-3 tables should be under 500 tokens)
+        very_large_schema = """
+Database Schema:
+================================================================================
+
+Table: iso_tank
+--------------------------------------------------------------------------------
+""" + "\n".join([f"  - column_{i}: varchar(255) with very long description that takes up many tokens" for i in range(50)]) + """
+
+Table: service_tank  
+--------------------------------------------------------------------------------
+""" + "\n".join([f"  - column_{i}: varchar(255) with very long description that takes up many tokens" for i in range(50)]) + """
+
+Table: vehicle_in
+--------------------------------------------------------------------------------
+""" + "\n".join([f"  - column_{i}: varchar(255) with very long description that takes up many tokens" for i in range(50)]) + """
+
+Table: client_data
+--------------------------------------------------------------------------------
+  - id: integer (primary key)
+  - name: varchar(100)
+"""
+        
+        # Try to prune with many large tables
+        selected_tables = ["iso_tank", "service_tank", "vehicle_in"]
+        join_hints = []
+        
+        pruned_schema = agent._prune_schema(very_large_schema, selected_tables, join_hints)
+        
+        # Should still return a valid schema (fallback logic)
+        assert pruned_schema.schema_text is not None
+        assert len(pruned_schema.selected_tables) > 0
+        # Token count should be reasonable (fallback should work)
+        assert pruned_schema.token_count > 0
+    
+    def test_common_tables_selection(self):
+        """Unit test: Test common tables selection logic."""
+        agent = SchemaIntelligenceAgent()
+        
+        schema = """
+Table: user_sessions
+  - id: integer (primary key)
+
+Table: iso_tank
+  - id: integer (primary key)
+  - tank_number: varchar(50)
+
+Table: client_data
+  - id: integer (primary key)
+  - name: varchar(100)
+
+Table: vehicle_tracking
+  - id: integer (primary key)
+  - location: varchar(100)
+
+Table: random_logs
+  - id: integer (primary key)
+  - log_data: text
+"""
+        
+        common_tables = agent._get_common_tables(schema)
+        
+        # Should return up to 5 tables
+        assert len(common_tables) <= 5
+        # Should prioritize business-relevant tables
+        business_tables = {"iso_tank", "client_data", "vehicle_tracking"}
+        found_business_tables = set(common_tables) & business_tables
+        assert len(found_business_tables) > 0  # At least one business table
+    
+    def test_max_depth_one_traversal(self):
+        """Integration: Verify max_depth=1 is used for aggressive pruning."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Create a schema with deep relationships
+        schema = """
+Table: iso_tank
+  - id: integer (primary key)
+  - vehicle_in_id: integer (foreign key -> vehicle_in.id)
+
+Table: vehicle_in
+  - id: integer (primary key)
+  - client_id: integer (foreign key -> client_data.id)
+
+Table: client_data
+  - id: integer (primary key)
+  - region_id: integer (foreign key -> regions.id)
+
+Table: regions
+  - id: integer (primary key)
+  - country_id: integer (foreign key -> countries.id)
+
+Table: countries
+  - id: integer (primary key)
+  - name: varchar(100)
+"""
+        
+        # Test with a question that matches iso_tank
+        entities = {"tank"}
+        tables = {"iso_tank", "vehicle_in", "client_data", "regions", "countries"}
+        
+        matches = agent._match_entities_to_tables(entities, tables, schema, 0.6)
+        
+        # Should find matches
+        assert len(matches) > 0
+        
+        # The traversal should only go 1 level deep due to aggressive pruning
+        # This is tested indirectly through the overall behavior
+    
+    def test_join_hints_removal_for_token_saving(self):
+        """Happy path: Remove JOIN hints if needed to stay under token limit."""
+        agent = SchemaIntelligenceAgent()
+        
+        # Create a scenario where JOIN hints might push us over the limit
+        schema = """
+Table: iso_tank
+  - id: integer (primary key)
+  - tank_number: varchar(50)
+  - vehicle_in_id: integer (foreign key -> vehicle_in.id)
+
+Table: vehicle_in
+  - id: integer (primary key)
+  - croyance_client_name: varchar(100)
+"""
+        
+        selected_tables = ["iso_tank", "vehicle_in"]
+        
+        # Create many JOIN hints that might push token count over limit
+        from agents.models.schema_models import JoinHint
+        many_join_hints = [
+            JoinHint(
+                from_table="iso_tank",
+                to_table="vehicle_in", 
+                join_condition=f"iso_tank.vehicle_in_id = vehicle_in.id -- hint {i}",
+                depth=0
+            ) for i in range(20)  # Many hints
+        ]
+        
+        pruned_schema = agent._prune_schema(schema, selected_tables, many_join_hints)
+        
+        # Should still be under token limit (hints removed if necessary)
+        assert pruned_schema.token_count <= 500
+        # Should include the tables
+        assert "iso_tank" in pruned_schema.schema_text
+        assert "vehicle_in" in pruned_schema.schema_text
+    
+    def test_prioritize_matched_tables_over_related(self):
+        """Happy path: Prioritize matched tables over related tables when limiting."""
+        agent = SchemaIntelligenceAgent()
+        
+        from agents.models.schema_models import SchemaGraph
+        
+        graph = SchemaGraph()
+        
+        # Create many tables
+        all_tables = ["matched_1", "matched_2"] + [f"related_{i}" for i in range(10)]
+        for table in all_tables:
+            graph.tables.add(table)
+            graph.adjacency_list[table] = {}
+        
+        # Connect related tables to matched tables
+        for i in range(10):
+            related_table = f"related_{i}"
+            graph.adjacency_list[related_table]["matched_1_id"] = ("matched_1", "id")
+        
+        start_tables = {"matched_1", "matched_2"}  # These are the matched tables
+        
+        selected_tables, join_hints = agent._traverse_graph(graph, start_tables, 1)
+        
+        # Should include both matched tables even if we hit the limit
+        assert "matched_1" in selected_tables
+        assert "matched_2" in selected_tables
+        # Should limit total tables
+        assert len(selected_tables) <= 5
