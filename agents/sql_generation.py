@@ -25,7 +25,8 @@ import time
 from typing import Tuple, List, Optional
 from agents.base import BaseAgent, AgentExecutionError
 from agents.mcp_client import MCPClient
-from agents.models.query_models import SQLGenerationRequest, SQLGenerationResponse
+from agents.sql_validator import SQLValidator
+from agents.models.query_models import SQLGenerationRequest, SQLGenerationResponse, SQLValidationRequest
 from config.ai_provider import ai_client, model_name, SDK_TYPE
 from config.logging_config import get_logger
 
@@ -77,13 +78,14 @@ SQL: SELECT tank_number, service_tank_status, created_at FROM service_tank ORDER
 """
     
     def __init__(self):
-        """Initialize the SQL Generation agent with MCP client."""
+        """Initialize the SQL Generation agent with MCP client and SQL validator."""
         super().__init__(name="SQLGenerationAgent")
         self.ai_client = ai_client
         self.model_name = model_name
         self.sdk_type = SDK_TYPE
         self.mcp_client = MCPClient()
-        self.logger.info("SQL Generation agent initialized with MCP client")
+        self.sql_validator = SQLValidator()
+        self.logger.info("SQL Generation agent initialized with MCP client and SQL validator")
     
     def execute(self, request: SQLGenerationRequest) -> SQLGenerationResponse:
         """
@@ -238,23 +240,43 @@ SQL: SELECT tank_number, service_tank_status, created_at FROM service_tank ORDER
     
     def _build_system_prompt(self, schema: str, validation_feedback: List[str] = None) -> str:
         """
-        Build system prompt with schema, examples, and optional validation feedback.
+        Build enhanced system prompt with explicit table lists and negative examples.
+        
+        Enhanced in Unit 5 to:
+        - Add explicit "AVAILABLE TABLES" section with exact table names
+        - Add "COMMON MISTAKES TO AVOID" section with negative examples
+        - Strengthen validation feedback integration
         
         Args:
             schema: Database schema
             validation_feedback: Optional validation issues from previous attempt
             
         Returns:
-            System prompt string
+            Enhanced system prompt string
         """
+        # Extract table names from schema for explicit listing
+        available_tables = self._extract_table_names_from_schema(schema)
+        
         prompt = f"""You are a SQL query generator for a PostgreSQL database.
 
 {schema}
 
+AVAILABLE TABLES:
+The following tables are available in the database. Use EXACTLY these table names:
+{chr(10).join(f"- {table}" for table in sorted(available_tables))}
+
+COMMON MISTAKES TO AVOID:
+- DO NOT use plural table names (e.g., "iso_tanks" instead of "iso_tank")
+- DO NOT guess table names - only use tables listed above
+- DO NOT use column names that don't exist in the schema
+- DO NOT create JOINs without ON clauses
+- DO NOT use dangerous keywords (DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE)
+- DO NOT return anything except the SQL query
+
 FEW-SHOT EXAMPLES:
 {self.FEW_SHOT_EXAMPLES}
 
-RULES:
+STRICT RULES:
 - Return ONLY the SQL query, no markdown, no explanation, no code blocks
 - Always use SELECT queries only
 - Never use DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE
@@ -265,25 +287,49 @@ RULES:
 - For counting queries, use COUNT(*) or COUNT(column_name)
 - For aggregations, use appropriate GROUP BY clauses
 - All JOINs must have ON clauses specifying the join condition
+- Use EXACT table names from the AVAILABLE TABLES list above
 """
         
         # Add validation feedback if this is a retry
         if validation_feedback:
             prompt += f"""
-IMPORTANT - PREVIOUS ATTEMPT FAILED VALIDATION:
-The previous SQL query had the following issues:
-{chr(10).join(f"- {issue}" for issue in validation_feedback)}
+🚨 CRITICAL - PREVIOUS ATTEMPT FAILED VALIDATION:
+Your previous SQL query had these specific issues:
+{chr(10).join(f"❌ {issue}" for issue in validation_feedback)}
 
-Please fix these issues in your new SQL query. Pay special attention to:
-- Using only tables and columns that exist in the schema above
-- Including ON clauses for all JOINs
-- Following all the rules listed above
+RETRY INSTRUCTIONS:
+- Carefully review the AVAILABLE TABLES list above
+- Use ONLY table names that appear in that list
+- Double-check column names against the schema
+- Ensure all JOINs have proper ON clauses
+- Follow ALL the rules listed above
 
 """
         
         prompt += "USER QUESTION:\n"
         
         return prompt
+    
+    def _extract_table_names_from_schema(self, schema: str) -> List[str]:
+        """
+        Extract table names from schema for explicit listing in prompts.
+        
+        Args:
+            schema: Database schema string
+            
+        Returns:
+            List of table names found in the schema
+        """
+        table_names = []
+        
+        for line in schema.split('\n'):
+            line = line.strip()
+            # Match table definition
+            table_match = re.match(r'^Table:\s+(\w+)', line, re.IGNORECASE)
+            if table_match:
+                table_names.append(table_match.group(1))
+        
+        return table_names
     
     def _call_ai(self, system_prompt: str, question: str, temperature: float) -> str:
         """
@@ -424,7 +470,7 @@ Please fix these issues in your new SQL query. Pay special attention to:
     
     def _validate_sql_fallback(self, sql: str, schema: str) -> Tuple[bool, List[str]]:
         """
-        Validate SQL using built-in validation logic (fallback mode).
+        Validate SQL using the dedicated SQL validator (fallback mode).
         
         Args:
             sql: SQL query to validate
@@ -433,65 +479,28 @@ Please fix these issues in your new SQL query. Pay special attention to:
         Returns:
             Tuple of (is_valid, list of validation issues)
         """
-        issues = []
-        
-        # Check for empty SQL
-        if not sql or not sql.strip():
-            issues.append("SQL query is empty")
-            return (False, issues)
-        
-        # Check safety rules
-        safety_issues = self._check_safety_rules(sql)
-        issues.extend(safety_issues)
-        
-        # Parse schema
-        valid_tables, valid_columns = self._parse_schema(schema)
-        
-        # Extract and validate tables
-        sql_tables = self._extract_tables(sql)
-        for table in sql_tables:
-            if table not in valid_tables:
-                issues.append(f"Table '{table}' does not exist in the database")
-        
-        # Extract and validate columns
-        sql_columns = self._extract_columns(sql)
-        sql_functions = [
-            'COUNT', 'SUM', 'AVG', 'MIN', 'MAX',
-            'CURRENT_DATE', 'CURRENT_TIMESTAMP', 'NOW',
-            'DATE_TRUNC', 'EXTRACT', 'COALESCE',
-            'UPPER', 'LOWER', 'TRIM', 'LENGTH', 'EPOCH'
-        ]
-        
-        for column in sql_columns:
-            # Skip wildcard
-            if column == '*':
-                continue
+        try:
+            # Use the dedicated SQL validator
+            validation_request = SQLValidationRequest(sql=sql, schema=schema)
+            validation_response = self.sql_validator.validate(validation_request)
             
-            # Skip SQL functions
-            if column.upper() in sql_functions:
-                continue
+            return (validation_response.is_valid, validation_response.issues)
             
-            # Skip aggregate function patterns
-            if re.match(r'^(COUNT|SUM|AVG|MIN|MAX)\(', column, re.IGNORECASE):
-                continue
+        except Exception as e:
+            self.logger.error(f"SQL validator error: {e}")
+            # Fallback to basic safety check if validator fails
+            issues = []
+            if not sql or not sql.strip():
+                issues.append("SQL query is empty")
             
-            # Check if column exists in any table
-            column_found = False
-            for table_columns in valid_columns.values():
-                if column in table_columns:
-                    column_found = True
-                    break
+            # Basic safety check
+            dangerous_keywords = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'CREATE']
+            sql_upper = sql.upper()
+            for keyword in dangerous_keywords:
+                if re.search(r'\b' + keyword + r'\b', sql_upper):
+                    issues.append(f"Dangerous keyword '{keyword}' is not allowed")
             
-            if not column_found:
-                issues.append(f"Column '{column}' does not exist in the database")
-        
-        # Check for JOINs without ON clauses
-        if self._has_join_without_on(sql):
-            issues.append("JOIN clause is missing ON condition")
-        
-        # Return validation result
-        is_valid = len(issues) == 0
-        return (is_valid, issues)
+            return (len(issues) == 0, issues)
     
     def _check_safety_rules(self, sql: str) -> List[str]:
         """

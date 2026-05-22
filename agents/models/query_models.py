@@ -7,10 +7,12 @@ These models extend the base agent models with SQL-specific fields.
 Models:
 - SQLGenerationRequest: Request model for SQL generation with retry and temperature settings
 - SQLGenerationResponse: Response model for SQL generation with validation issues and retry count
+- SQLValidationRequest: Request model for SQL validation
+- SQLValidationResponse: Response model for SQL validation with specific issues
 """
 
 from typing import List, Optional
-from pydantic import Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 from agents.models.agent_models import AgentRequest, AgentResponse
 
 
@@ -114,3 +116,83 @@ class SQLGenerationResponse(AgentResponse):
         if v < 0:
             raise ValueError("retry_count must be non-negative")
         return v
+
+
+class SQLValidationRequest(BaseModel):
+    """
+    Request model for SQL validation.
+    
+    Standalone model for SQL validation (doesn't inherit from AgentRequest
+    to avoid unnecessary fields).
+    
+    Attributes:
+        sql: SQL query to validate
+        schema: Database schema to validate against
+        
+    Example:
+        request = SQLValidationRequest(
+            sql="SELECT COUNT(*) FROM iso_tanks LIMIT 100;",
+            schema="Table: iso_tank..."
+        )
+    """
+    
+    sql: str = Field(
+        description="SQL query to validate",
+        min_length=1
+    )
+    schema: str = Field(
+        description="Database schema to validate against",
+        min_length=1
+    )
+    
+    @field_validator("sql")
+    @classmethod
+    def validate_sql(cls, v: str) -> str:
+        """Validate that SQL is not empty."""
+        if not v or not v.strip():
+            raise ValueError("SQL query cannot be empty")
+        return v.strip()
+    
+    @field_validator("schema")
+    @classmethod
+    def validate_schema(cls, v: str) -> str:
+        """Validate that schema is not empty."""
+        if not v or not v.strip():
+            raise ValueError("Schema cannot be empty")
+        return v.strip()
+
+
+class SQLValidationResponse(BaseModel):
+    """
+    Response model for SQL validation.
+    
+    Standalone model for SQL validation results.
+    
+    Attributes:
+        is_valid: Whether the SQL query is valid
+        issues: List of specific validation issues
+        sql: Original SQL query that was validated
+        schema: Schema that was used for validation
+        
+    Example:
+        response = SQLValidationResponse(
+            is_valid=False,
+            issues=["Table 'iso_tanks' does not exist in the database"],
+            sql="SELECT COUNT(*) FROM iso_tanks LIMIT 100;",
+            schema="Table: iso_tank..."
+        )
+    """
+    
+    is_valid: bool = Field(
+        description="Whether the SQL query is valid"
+    )
+    issues: List[str] = Field(
+        default_factory=list,
+        description="List of specific validation issues"
+    )
+    sql: str = Field(
+        description="Original SQL query that was validated"
+    )
+    schema: str = Field(
+        description="Schema that was used for validation"
+    )

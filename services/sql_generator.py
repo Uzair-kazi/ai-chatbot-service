@@ -99,12 +99,14 @@ SQL: SELECT tank_number, service_tank_status, created_at FROM service_tank ORDER
         """Build the system prompt with schema and examples."""
         return f"""You are a SQL query generator for a PostgreSQL database.
 
+CRITICAL: Use EXACT table and column names from the schema below. DO NOT guess or modify names.
+
 {schema}
 
 FEW-SHOT EXAMPLES:
 {self.FEW_SHOT_EXAMPLES}
 
-RULES:
+STRICT RULES:
 - Return ONLY the SQL query, no markdown, no explanation, no code blocks
 - Always use SELECT queries only
 - Never use DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE
@@ -114,6 +116,13 @@ RULES:
 - Use snake_case for table and column names as shown in the schema
 - For counting queries, use COUNT(*) or COUNT(column_name)
 - For aggregations, use appropriate GROUP BY clauses
+
+CRITICAL: Table names are EXACT - do not add 's' for plural:
+- Use 'iso_tank' NOT 'iso_tanks'
+- Use 'service_tank' NOT 'service_tanks'
+- Use 'vehicle_in' NOT 'vehicle_ins'
+
+If you're unsure about a table or column name, use the EXACT names from the schema above.
 
 USER QUESTION:
 """

@@ -10,51 +10,97 @@
 # Temporal terms for date/time resolution
 temporal_terms:
   # Current period terms
-  this_month: "WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE)"
-  this_week: "WHERE created_at >= DATE_TRUNC('week', CURRENT_DATE)"
-  this_year: "WHERE created_at >= DATE_TRUNC('year', CURRENT_DATE)"
-  today: "WHERE DATE(created_at) = CURRENT_DATE"
+  this_month: "WHERE \"createdAt\" >= DATE_TRUNC('month', CURRENT_DATE)"
+  this_week: "WHERE \"createdAt\" >= DATE_TRUNC('week', CURRENT_DATE)"
+  this_year: "WHERE \"createdAt\" >= DATE_TRUNC('year', CURRENT_DATE)"
+  today: "WHERE DATE(\"createdAt\") = CURRENT_DATE"
   
   # Past period terms
-  last_month: "WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month') AND created_at < DATE_TRUNC('month', CURRENT_DATE)"
-  last_quarter: "WHERE created_at >= DATE_TRUNC('quarter', CURRENT_DATE - INTERVAL '3 months') AND created_at < DATE_TRUNC('quarter', CURRENT_DATE)"
-  last_week: "WHERE created_at >= DATE_TRUNC('week', CURRENT_DATE - INTERVAL '1 week') AND created_at < DATE_TRUNC('week', CURRENT_DATE)"
-  yesterday: "WHERE DATE(created_at) = CURRENT_DATE - INTERVAL '1 day'"
+  last_month: "WHERE \"createdAt\" >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month') AND \"createdAt\" < DATE_TRUNC('month', CURRENT_DATE)"
+  last_quarter: "WHERE \"createdAt\" >= DATE_TRUNC('quarter', CURRENT_DATE - INTERVAL '3 months') AND \"createdAt\" < DATE_TRUNC('quarter', CURRENT_DATE)"
+  last_week: "WHERE \"createdAt\" >= DATE_TRUNC('week', CURRENT_DATE - INTERVAL '1 week') AND \"createdAt\" < DATE_TRUNC('week', CURRENT_DATE)"
+  yesterday: "WHERE DATE(\"createdAt\") = CURRENT_DATE - INTERVAL '1 day'"
   
   # Relative period terms
-  last_7_days: "WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'"
-  last_30_days: "WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'"
-  last_90_days: "WHERE created_at >= CURRENT_DATE - INTERVAL '90 days'"
+  last_7_days: "WHERE \"createdAt\" >= CURRENT_DATE - INTERVAL '7 days'"
+  last_30_days: "WHERE \"createdAt\" >= CURRENT_DATE - INTERVAL '30 days'"
+  last_90_days: "WHERE \"createdAt\" >= CURRENT_DATE - INTERVAL '90 days'"
 
-# Entity mappings for business terminology
+# Entity mappings for business terminology (updated for actual schema)
 entity_mappings:
-  # Client-related terms
-  clients: "vehicle_in.croyance_client_name"
-  client_name: "vehicle_in.croyance_client_name"
-  customer: "vehicle_in.croyance_client_name"
-  customers: "vehicle_in.croyance_client_name"
-  
   # Tank-related terms
   tanks: "iso_tank table (for ISO tanks) or service_tank table (for service tanks)"
   iso_tanks: "iso_tank table"
+  iso_tank: "iso_tank table"
   service_tanks: "service_tank table"
-  tank_number: "iso_tank.tank_number or service_tank.tank_number"
-  tank_status: "iso_tank.iso_tank_status or service_tank.service_tank_status"
+  service_tank: "service_tank table"
+  tank_number: "iso_tank.tankNumber or service_tank.tank_number"
+  tank_status: "iso_tank.isoTankStatus or service_tank.service_tank_status"
+  tanker: "iso_tank or service_tank or suraksha_tanker"
+  tankers: "iso_tank or service_tank or suraksha_tanker"
   
   # Vehicle-related terms
   vehicle_in: "vehicle_in table (for incoming vehicles)"
   vehicle_out: "vehicle_out table (for outgoing vehicles)"
-  vehicle_in_date: "vehicle_in.in_date_time"
-  vehicle_out_date: "vehicle_out.out_date_time"
+  vehicles: "vehicle_in or vehicle_out or general_vehicle"
+  vehicle_number: "vehicle_in.vehicle_number or vehicle_out.out_vehicle_number"
+  vehicle_status: "vehicle_in.vehicle_status or vehicle_out.out_vehicle_status"
+  
+  # Client-related terms
+  clients: "clients table or service_clients table"
+  client: "clients table or service_clients table"
+  client_name: "clients.name or service_clients.name or vehicle_in.croyance_client_name"
+  customer: "clients table"
+  customers: "clients table"
   
   # Survey-related terms
-  survey_status: "survey_form_id IS NULL means not surveyed, survey_form_id IS NOT NULL means surveyed"
-  surveyed: "survey_form_id IS NOT NULL"
-  not_surveyed: "survey_form_id IS NULL"
-  unsurveyed: "survey_form_id IS NULL"
+  survey: "surveyForm table"
+  surveys: "surveyForm table"
+  survey_form: "surveyForm table"
+  survey_status: "surveyForm.surveyStatus"
+  surveyed: "surveyForm table records"
+  inspection: "iso_inspection table or survey_checklist table"
+  inspections: "iso_inspection table or survey_checklist table"
+  
+  # Cleaning-related terms
+  cleaning: "iso_cleaning table or service_cleanings table"
+  cleanings: "iso_cleaning table or service_cleanings table"
+  cleaning_status: "iso_cleaning.isoCleaningStatus"
+  
+  # Certificate-related terms
+  certificate: "iso_certificates table or service_certificates table or suraksha_certificate table"
+  certificates: "iso_certificates table or service_certificates table or suraksha_certificate table"
+  certificate_number: "iso_certificates.certificateNumber or service_certificates.certificateNumber"
+  
+  # Bay-related terms
+  bay: "bays table"
+  bays: "bays table"
+  bay_number: "bays.bayNumber"
+  bay_status: "bays.currentStatus"
+  
+  # Operator/Owner terms
+  operator: "operators table"
+  operators: "operators table"
+  owner: "owners table"
+  owners: "owners table"
+  
+  # Transporter terms
+  transporter: "transporters table"
+  transporters: "transporters table"
+  transporter_name: "vehicle_in.transporter_name or vehicle_out.out_transporter_name"
+  
+  # Driver terms
+  driver: "vehicle_in.driver_name or vehicle_out.out_driver_name"
+  drivers: "vehicle_in.driver_name or vehicle_out.out_driver_name"
+  driver_name: "vehicle_in.driver_name or vehicle_out.out_driver_name"
   
   # Status-related terms
-  in_status: "iso_tank_status = 'IN' or service_tank_status = 'IN'"
-  out_status: "iso_tank_status = 'OUT' or service_tank_status = 'OUT'"
-  active: "status = 'ACTIVE' or iso_tank_status = 'IN'"
-  inactive: "status = 'INACTIVE' or iso_tank_status = 'OUT'"
+  in_status: "vehicle_status = 'IN' or currentStatus = 'OCCUPIED'"
+  out_status: "vehicle_status = 'OUT' or currentStatus = 'AVAILABLE'"
+  active: "status = 'ACTIVE'"
+  completed: "status = 'COMPLETED'"
+  
+  # Suraksha-related terms
+  suraksha: "suraksha_vehicle table or suraksha_checklist table"
+  suraksha_vehicle: "suraksha_vehicle table"
+  suraksha_checklist: "suraksha_checklist table"
